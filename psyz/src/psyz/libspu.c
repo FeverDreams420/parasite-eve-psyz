@@ -21,3 +21,10 @@ void SpuSetReverbModeDepth(short depthL, short depthR) {
     SPUW(rev_vol.left, (u16)depthL);
     SPUW(rev_vol.right, (u16)depthR);
 }
+
+int SpuSetReverbModeType(unsigned int mode) {
+    SpuReverbAttr attr = {0};
+    attr.mask = SPU_REV_MODE;
+    attr.mode = (int)mode;
+    return (int)SpuSetReverbModeParam(&attr);
+}

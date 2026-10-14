@@ -1012,7 +1012,7 @@ void SpuGetReverbModeParam(SpuReverbAttr* attr);
  *
  * @param type Reverb mode type
  */
-void SpuSetReverbModeType(long type);
+int SpuSetReverbModeType(unsigned int mode);
 
 /**
  * @brief Get reverb mode type
