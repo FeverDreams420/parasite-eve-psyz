@@ -1977,3 +1977,17 @@ ZTEST(gte, ratan2_signed_axes) {
     zexpect_s32_eq(1024, ratan2(128, 0));
     zexpect_s32_eq(-1024, ratan2(-128, 0));
 }
+
+#ifdef __psyz
+ZTEST(gte, leading_sign_registers) {
+    const unsigned int sources[] = {0, 1, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF};
+    const unsigned int counts[] = {32, 31, 1, 1, 32};
+    for (unsigned int i = 0; i < 5; ++i) {
+        Psyz_GteDataWrite(30, sources[i]);
+        zexpect_u32_eq(sources[i], Psyz_GteDataRead(30));
+        zexpect_u32_eq(counts[i], Psyz_GteDataRead(31));
+        Psyz_GteDataWrite(31, 123);
+        zexpect_u32_eq(counts[i], Psyz_GteDataRead(31));
+    }
+}
+#endif

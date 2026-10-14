@@ -57,6 +57,8 @@
     R(unsigned int, rgb1) /* cop1 21 */                                        \
     R(unsigned int, rgb2) /* cop1 22 */                                        \
     R(unsigned int, res1) /* cop1 23 (reserved) */                             \
+    R(unsigned int, lzcs) /* cop1 30 leading sign source */                   \
+    R(unsigned int, lzcr) /* cop1 31 leading sign count */                    \
     R(MATRIX, m)          /* cop2 0-7, rotation 3x3 + translation */           \
     R(MATRIX, l1)         /* cop2 8-15 light source 3x3 + bg color */          \
     R(MATRIX, l2)         /* cop2 16-23 light source 3x3 + bg color */         \
@@ -110,6 +112,8 @@ static struct {
 #define RGB1 GTE(rgb1)
 #define RGB2 GTE(rgb2)
 #define RES1 GTE(res1)
+#define LZCS GTE(lzcs)
+#define LZCR GTE(lzcr)
 #define M GTE(m)
 #define L1 GTE(l1)
 #define L2 GTE(l2)
@@ -2931,6 +2935,10 @@ unsigned int Psyz_GteDataRead(unsigned idx) {
         return (unsigned int)MAC2;
     case 27:
         return (unsigned int)MAC3;
+    case 30:
+        return LZCS;
+    case 31:
+        return LZCR;
     default:
         return 0;
     }
@@ -3025,6 +3033,17 @@ void Psyz_GteDataWrite(unsigned idx, unsigned int v) {
     case 27:
         MAC3 = (int)v;
         break;
+    case 30: {
+        LZCS = v;
+        unsigned int bits = (v & 0x80000000u) ? ~v : v;
+        LZCR = 0;
+        while (LZCR < 32 && !(bits & 0x80000000u)) {
+            ++LZCR;
+            bits <<= 1;
+        }
+        break;
+    }
+    /* LZCR is read-only. */
     default:
         break;
     }
