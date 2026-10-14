@@ -719,7 +719,7 @@ int rsin(int a);
  * @param x X value
  * @return Angle value (4096 = 1 degree)
  */
-long ratan2(long y, long x);
+int ratan2(int y, int x);
 
 /**
  * @brief Read rotation matrix

@@ -119,8 +119,8 @@ short ratan_tbl[] = {
     0x0000, 0x0000,
 };
 
-long ratan2(long dx, long dy) {
-    long ret;
+int ratan2(int dx, int dy) {
+    int ret;
     int flag0;
     int flag1;
     int lookup;

@@ -1966,3 +1966,14 @@ ZTEST(gte, rtps_ir0_flags_fraction_above_limit) {
     zexpect_s32_eq(0x1000001, r.mac0);
     zexpect_u32_eq(0x00001000, (unsigned int)r.flag);
 }
+
+#ifdef __psyz
+_Static_assert(_Generic(&ratan2, int (*)(int, int): 1, default: 0),
+               "ratan2 uses signed 32-bit PS1 coordinates on LP64 hosts");
+#endif
+ZTEST(gte, ratan2_signed_axes) {
+    zexpect_s32_eq(0, ratan2(0, 128));
+    zexpect_s32_eq(2048, ratan2(0, -128));
+    zexpect_s32_eq(1024, ratan2(128, 0));
+    zexpect_s32_eq(-1024, ratan2(-128, 0));
+}
