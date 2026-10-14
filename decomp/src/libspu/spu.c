@@ -183,7 +183,9 @@ INCLUDE_ASM("asm/nonmatchings/libspu/spu", _spu_Fr_);
 #ifdef __psyz
 void Psyz_KernelRaise(unsigned int desc, unsigned int spec);
 void _spu_DmaDone(void) {
-    if (!_spu_transferCallback) {
+    if (_spu_transferCallback) {
+        _spu_transferCallback();
+    } else {
         Psyz_KernelRaise(HwSPU, EvSpCOMP);
     }
 }
