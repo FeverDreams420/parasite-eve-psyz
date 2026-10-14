@@ -184,6 +184,9 @@ int Psyz_VideoSetAspectMode(PsyzAspectMode mode) {
 PsyzAspectMode Psyz_VideoGetAspectMode(void) { return aspect_mode; }
 
 static Uint32 last_vsync_us = 0; // time of the last blocking Psyz_VideoVSync
+static Uint32 vblank_clock_offset;
+static Uint32 limitless_vblank_base;
+static Uint64 limitless_frame_base;
 
 // frame pacing state
 static double target_frame_rate = VSYNC_NTSC;
@@ -462,7 +465,11 @@ int Psyz_VideoVSync(int mode) {
     unsigned short ret;
     Sdl3Common_ApplyPendingTimingReset();
     if (mode < 0) {
-        return (int)((double)SDL_GetTicksNS() * target_frame_rate / 1e9);
+        /* With pacing disabled, each explicit present advances one blank.
+         * Wall time cannot drive this counter in an accelerated runner. */
+        if (vsync_mode == PSYZ_VSYNC_LIMITLESS)
+            return (int)(limitless_vblank_base + (Uint32)(gpu_stats.total_frames - limitless_frame_base));
+        return (int)((Uint32)((double)SDL_GetTicksNS() * target_frame_rate / 1e9) + vblank_clock_offset);
     }
     // a line is approximated as 64 us
     now_us = (Uint32)(SDL_GetTicksNS() / 1000);
@@ -480,7 +487,15 @@ int Psyz_VideoSetVsyncMode(PsyzVsyncMode mode) {
     if (mode < 0 || mode > 3) {
         return -1;
     }
+    Uint32 previous_count = (Uint32)Psyz_VideoVSync(-1);
     vsync_mode = mode;
+    if (mode == PSYZ_VSYNC_LIMITLESS) {
+        limitless_vblank_base = previous_count;
+        limitless_frame_base = gpu_stats.total_frames;
+    } else {
+        Uint32 clock_count = (Uint32)((double)SDL_GetTicksNS() * target_frame_rate / 1e9);
+        vblank_clock_offset = previous_count - clock_count;
+    }
     if (sdl3_window && is_platform_init_successful) {
         ConfigureVSync(target_frame_rate);
     }

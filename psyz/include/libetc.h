@@ -79,9 +79,12 @@ struct Callbacks {
  *
  * @param mode Synchronization mode:
  *             - 0: Wait for next vertical blank
- *             - Negative: Return immediately (non-blocking)
- *             - Positive: Wait for specified number of vertical blanks
- * @return Number of vertical blanks since last call
+ *             - Negative: Return the vertical-blank counter without waiting
+ *             - 1: Return elapsed horizontal lines without waiting
+ *             - Greater than 1: Wait until that many blanks have passed since
+ *               the last blocking call, with a minimum wait of one blank
+ * @return Vertical-blank count for negative mode; otherwise elapsed horizontal
+ *         lines measured before waiting
  */
 int VSync(int mode);
 

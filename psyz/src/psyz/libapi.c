@@ -50,30 +50,30 @@ PsyzVSyncCb Psyz_SetVSyncCb(PsyzVSyncCb cb) {
     return prev;
 }
 
-// Known limitation: VSync(n) with n > 1 paces a single frame, not n vblanks
+/* SDK VSync(n) waits for the interval since the previous blocking call,
+ * then at least the next blank. Queries do not reset that interval. */
+static unsigned int last_vsync_count;
 int VSync(int mode) {
-    int elapsed, n;
     Psyz_KernelPoll();
-    if (mode < 0) {
-        return Psyz_VideoVSync(-1);
-    } else if (mode == 1) {
-        return Psyz_VideoVSync(1);
-    } else if (mode > 1) {
-        static int logged_once = 0;
-        if (!logged_once) {
-            logged_once = 1;
-            WARNF("VSync(n>1) is not fully implemented.");
+    if (mode < 0) return Psyz_VideoVSync(-1);
+    if (mode == 1) return Psyz_VideoVSync(1);
+
+    int elapsed = Psyz_VideoVSync(1);
+    unsigned int now = (unsigned int)Psyz_VideoVSync(-1);
+    unsigned int target = mode > 1 ? last_vsync_count + (unsigned int)mode : now + 1;
+    if ((int32_t)(target - now) < 1) target = now + 1;
+    do {
+        unsigned int before = now;
+        Psyz_VideoVSync(0);
+        now = (unsigned int)Psyz_VideoVSync(-1);
+        unsigned int advanced = now - before;
+        while (advanced--) {
+            ReadPadsOnVsync();
+            if (g_PsyzVsyncCb) g_PsyzVsyncCb();
+            Psyz_KernelVBlank();
         }
-    }
-    n = mode > 0 ? mode : 1;
-    elapsed = Psyz_VideoVSync(0);
-    ReadPadsOnVsync(); // this is done on vsync by the BIOS
-    if (g_PsyzVsyncCb) {
-        g_PsyzVsyncCb();
-    }
-    for (; n > 0; n--) {
-        Psyz_KernelVBlank();
-    }
+    } while ((int32_t)(now - target) < 0);
+    last_vsync_count = (unsigned int)Psyz_VideoVSync(-1);
     return elapsed;
 }
 

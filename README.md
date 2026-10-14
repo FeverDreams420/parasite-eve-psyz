@@ -156,3 +156,16 @@ and GLSL 330/GLES 300 syntax are verified; Vulkan/Direct3D runtime and OpenGL
 runtime remain unverified here (the macOS build rejects the OpenGL backend).
 
 Reference: [PSX GPU color conversion](https://psx-spx.consoledev.net/ps1/gpu/i-o-ports-dma-channels-commands-vram/).
+
+
+Parasite Eve fork: SDK VSync(n>1) now waits against the blank counter relative
+to the previous blocking synchronization, with a minimum of one new blank.
+Presents, controller sampling, callback delivery and kernel blank service follow
+the counter's actual progress. Mode 1 remains a horizontal-line query, and
+negative modes remain counter queries. In SDL limitless mode, explicit presents
+advance the blank counter deterministically; switching pacing modes preserves
+counter continuity. The parent regression checks modes 0/1/2/4, no query-side
+advancement, callback counts and an already-elapsed interval. Metal runtime
+passes with libapi.c and sdl3_gpu.c instrumented by ASan/UBSan/function. Hardware
+scanline precision and autonomous blank interrupts while no synchronization
+call is executing are not established by these checks.
