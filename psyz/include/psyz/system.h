@@ -20,6 +20,12 @@
 extern "C" {
 #endif
 
+/* BIOS random generator, separate from the host C library. The state getter
+ * plus Psyz_Srand allow deterministic save/restore without consuming a value. */
+int Psyz_Rand(void);
+void Psyz_Srand(unsigned int seed);
+unsigned int Psyz_RandState(void);
+
 // A native PS1 build uses PSY-Q's own file I/O.
 #ifndef __psx__
 

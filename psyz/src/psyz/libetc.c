@@ -6,6 +6,16 @@
 
 #include <psyz/log.h>
 
+/* BIOS A(2Fh)/A(30h): unsigned 32-bit state, 15-bit result.
+ * https://psx-spx.consoledev.net/ps1/kernelbios/misc-functions/ */
+static uint32_t biosRandomState = 1;
+int Psyz_Rand(void) {
+    biosRandomState = biosRandomState * UINT32_C(0x41c64e6d) + UINT32_C(0x3039);
+    return (int)((biosRandomState >> 16) & 0x7fff);
+}
+void Psyz_Srand(unsigned int seed) { biosRandomState = (uint32_t)seed; }
+unsigned int Psyz_RandState(void) { return biosRandomState; }
+
 void MyPadInit(int mode);
 void PadInit(int mode) { MyPadInit(mode); }
 
