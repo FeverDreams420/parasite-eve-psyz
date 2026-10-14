@@ -137,7 +137,7 @@ static const char fragment_shader_body[] = {
     "    -3.0, +1.0, -4.0, +0.0,"
     "    +3.0, -1.0, +2.0, -2.0);\n"
     "vec3 applyDither(vec3 c) {\n"
-    "    if (dither == 0u) return c;\n"
+    "    if (dither == 0u) return clamp(floor(c * 255.0 / 8.0), 0.0, 31.0) / 31.0;\n"
     "    int dx = int(gl_FragCoord.x) & 3;\n"
     "    int dy = int(gl_FragCoord.y) & 3;\n"
     "    float off = ditherMatrix[dy][dx];\n"

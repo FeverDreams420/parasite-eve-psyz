@@ -144,3 +144,15 @@ Contributions are welcome! If you find issues or want to add new features, pleas
 Special thanks to [SoapyMan](https://github.com/SoapyMan) for the inspiration from their [PsyCross](https://github.com/OpenDriver2/PsyCross/) project.
 
 Thanks to [grumpycoders/pcsx-redux](https://github.com/grumpycoders/pcsx-redux/) for their ongoing support to the PS1 development community and help.
+
+
+Parasite Eve fork: non-dithered fragment output now quantizes RGB channels to
+five bits during rasterization instead of leaving an eight-bit value to be
+rescaled by VRAM readback. This preserves PS1 truncation, including RGB=248
+mapping to channel 31. The OpenGL source and generated Metal, SPIR-V and DXIL
+fragment headers share the change. Parent-project GPU regression covers all
+256 input values of each RGB channel in both native draw buffers. Metal runtime
+and GLSL 330/GLES 300 syntax are verified; Vulkan/Direct3D runtime and OpenGL
+runtime remain unverified here (the macOS build rejects the OpenGL backend).
+
+Reference: [PSX GPU color conversion](https://psx-spx.consoledev.net/ps1/gpu/i-o-ports-dma-channels-commands-vram/).

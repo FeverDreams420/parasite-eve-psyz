@@ -38,7 +38,7 @@ const mat4 ditherMatrix = mat4(
     -3.0, +1.0, -4.0, +0.0,
     +3.0, -1.0, +2.0, -2.0);
 vec3 applyDither(vec3 c) {
-    if (dither == 0u) return c;
+    if (dither == 0u) return clamp(floor(c * 255.0 / 8.0), 0.0, 31.0) / 31.0;
     int dx = int(gl_FragCoord.x) & 3;
     int dy = int(gl_FragCoord.y) & 3;
     float off = ditherMatrix[dy][dx];
