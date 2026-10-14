@@ -10,3 +10,14 @@ unsigned* dma_dpcr = &_dma_dpcr; // TODO this must be removed
 volatile u16 _spu_RQ[10] = {0};
 
 void SpuNGetVoiceAttr(int vNum, SpuVoiceAttr* arg) { NOT_IMPLEMENTED; }
+
+void SpuGetVoiceEnvelope(int voiceNum, short* envx) {
+    if (!envx) return;
+    *envx = voiceNum >= 0 && voiceNum < NUM_VOICES
+                ? (short)SPURV(voiceNum, volumex) : 0;
+}
+
+void SpuSetReverbModeDepth(short depthL, short depthR) {
+    SPUW(rev_vol.left, (u16)depthL);
+    SPUW(rev_vol.right, (u16)depthR);
+}
