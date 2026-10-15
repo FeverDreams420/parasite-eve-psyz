@@ -161,6 +161,32 @@ ZTEST(gpu, drawprim_packed_sprite_and_native_commands) {
     zexpect_u32_eq(0, result[3]);
 }
 
+ZTEST(gpu, merged_native_commands_sprite_direct_ot_and_copies) {
+    u16 palette[16] = {0, 0xC210}, texture = 0x1111;
+    RECT palette_rect = {0,480,16,1}, texture_rect = {512,256,1,1};
+    RECT result_rect = {12,14,4,1}, window = {0,0,0,0};
+    struct { union { DR_TPAGE page; DR_MODE mode; } command; SPRT sprite; } packet, copy;
+    for (int kind = 0; kind < 2; ++kind) {
+        memset(&packet, 0xA5, sizeof(packet));
+        if (kind) SetDrawMode(&packet.command.mode,0,0,GetTPage(0,0,512,256),&window);
+        else SetDrawTPage(&packet.command.page,0,0,GetTPage(0,0,512,256));
+        setSprt(&packet.sprite);setRGB0(&packet.sprite,128,128,128);
+        setXY0(&packet.sprite,12,14);setUV0(&packet.sprite,0,0);setWH(&packet.sprite,4,1);
+        packet.sprite.clut=GetClut(0,480);
+        zexpect_s32_eq(0,MargePrim(&packet.command,&packet.sprite));
+        memcpy(&copy,&packet,sizeof(copy));
+        for (int path = 0; path < 4; ++path) {
+            ClearImage(&result_rect,0,0,0);
+            LoadImage(&palette_rect,(u_long*)palette);LoadImage(&texture_rect,(u_long*)&texture);DrawSync(0);
+            void* head = path & 1 ? (void*)&copy : (void*)&packet;
+            if (path < 2) DrawPrim(head);
+            else { OT_TYPE ot[2];ClearOTagR(ot,2);addPrim(ot+1,head);DrawOTag(ot+1);DrawSync(0); }
+            u16 result[4] = {0};DrawSync(0);StoreImage(&result_rect,(u_long*)result);DrawSync(0);
+            for (int i = 0; i < 4; ++i) zexpect_u32_eq(0xC210,result[i]);
+        }
+    }
+}
+
 ZTEST(gpu, fnt_print) {
     FntLoad(960, 256);
     SetDumpFnt(FntOpen(4, 4, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 512));

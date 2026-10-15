@@ -120,6 +120,10 @@ extern int (*GPU_printf)(); /* printf() object */
 /*
  * Primitive Handling Macros
  */
+/* LP64 MargePrim identifies its packed command stream with a reserved GP0
+ * NOP in the discarded second packet header. It survives packet copies. */
+#define PSYZ_MERGED_PRIM_NOP 0x005A4D50U
+
 #define setlen(p, _len) (((P_TAG*)(p))->len = (u_char)(_len))
 #define setaddr(p, _addr) (((P_TAG*)(p))->addr = (u_long)(_addr))
 #define setcode(p, _code) (((P_TAG*)(p))->code = (u_char)(_code))

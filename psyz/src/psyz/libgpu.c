@@ -149,6 +149,18 @@ int Psyz_GpuExeque() {
     return queue_len;
 }
 
+/* Native DR_* arrays contain u_long words, while combined packets retain
+ * packed 32-bit GP0 words. MargePrim's reserved NOP makes the format explicit
+ * without changing the tag ABI or relying on the first command being a shape. */
+static int is_packed_command_stream(const u32* words, int count) {
+    if (count <= 0) return 0;
+    unsigned int code = words[0] >> 24;
+    if (code >= 0x20 && code < 0x80) return 1;
+    for (int i = 0; i < count; ++i)
+        if (words[i] == PSYZ_MERGED_PRIM_NOP) return 1;
+    return 0;
+}
+
 static void GPU_Enqueue(u_long* packets) {
     DR_ENV* env = (DR_ENV*)packets;
     if (sizeof(u_long) == 4) {
@@ -181,17 +193,13 @@ static void GPU_Enqueue(u_long* packets) {
             // Gpu code is usually written to a u_long array, which will work
             // fine on both 32-bit and 64-bit compiled code.
             // But primitives are mapped from structs, we need to align the data
-            int code = env->len ? getcode(env) & ~3 : 0;
-            if (code >= 0x20 && code < 0x80) {
+            if (is_packed_command_stream((const u32*)env->code, (int)env->len)) {
                 // it is a prim, we need to split
                 u32* prim_data = (u32*)env->code;
                 for (u_long i = 0; i < env->len; i++) {
                     queue_buf[queue_len + i] = prim_data[i];
                 }
             } else if (env->len > 0) {
-                // TODO this is a temporary solution:
-                // if gpu commands get merged with primitives, this will not
-                // work
                 memcpy(queue_buf + queue_len, env->code,
                        env->len * sizeof(u_long));
             }
@@ -227,8 +235,7 @@ static int psyz_cwb(u32* data, s32 n) {
     /* DrawPrim uses the same mixed ABI as OT packets: packed 32-bit
      * primitive fields, native command words for DR_* packets. It must
      * also dispatch E1/E3/etc commands rather than treating them as shapes. */
-    unsigned code = (data[0] >> 24) & 0xFF;
-    if (sizeof(u_long) == 8 && code >= 0x20 && code < 0x80) {
+    if (sizeof(u_long) == 8 && is_packed_command_stream(data, n)) {
         for (int i = 0; i < n; ++i) queue_buf[i] = data[i];
     } else {
         memcpy(queue_buf, data, (size_t)n * sizeof(u_long));
