@@ -130,10 +130,10 @@ static void populate_entry(
     }
 
     // ensure max 20 characters per name entry
-    if (strlen(filename) >= sizeof(dst->name)) {
+    if (strlen(filename) > sizeof(dst->name)) {
         WARNF("'%s' will be truncated", filename);
     }
-    strncpy_s(dst->name, sizeof(dst->name), filename, _TRUNCATE);
+    strncpy(dst->name, filename, sizeof(dst->name));
     dst->attr = 0x10 | 0x40; // Same as Unix version
     dst->size = (long)fileStat.st_size;
     dst->next = NULL;

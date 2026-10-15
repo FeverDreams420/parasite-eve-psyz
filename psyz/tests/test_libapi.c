@@ -119,6 +119,28 @@ ZTEST(bu, create_and_write_file) {
     zexpect_u16_eq(expected, actual);
 }
 
+ZTEST(bu, reopen_existing_file_for_write_and_read_write) {
+    const char* name = "bu00:BASLUS-00000PSYZ00";
+    const unsigned char replacement[] = {0x5A, 0xA5, 0x36, 0xC9};
+    unsigned char actual[4] = {0};
+    int fd = open(name, FWRITE);
+    zassert_s32_ne(-1, fd);
+    zexpect_s32_eq(4, write(fd, (char*)replacement, 4));
+    close(fd);
+    fd = open(name, FREAD | FWRITE);
+    zassert_s32_ne(-1, fd);
+    zexpect_s32_eq(4, read(fd, actual, 4));
+    zexpect_u8array_eq(replacement, actual, 4);
+    zexpect_s32_eq(0, lseek(fd, 0, SEEK_SET));
+    zexpect_s32_eq(2, write(fd, (char*)replacement + 2, 2));
+    close(fd);
+    fd = open(name, FREAD);
+    zassert_s32_ne(-1, fd);
+    zexpect_s32_eq(4, read(fd, actual, 4));
+    zexpect_u16_eq(0xC936, (unsigned)actual[0] | ((unsigned)actual[1] << 8));
+    close(fd);
+}
+
 ZTEST(path_adjustment, basic_memory_card_path) {
     char dst[256] = {0};
     Psyz_AdjustPath(dst, "bu00:TESTFILE", sizeof(dst));
@@ -162,14 +184,14 @@ ZTEST(path_adjustment, callback_null_uses_internal) {
     zexpect_str_eq("bu10" PATH_SEP "TESTFILE", dst);
 }
 
-ZTEST(path_adjustment, truncates_long_filename_to_19_chars) {
+ZTEST(path_adjustment, preserves_twenty_byte_filenames) {
     char dst[256] = {0};
-
     Psyz_AdjustPath(dst, "bu00:1234567890123456789", sizeof(dst));
     zexpect_str_eq("bu00" PATH_SEP "1234567890123456789", dst);
-
     Psyz_AdjustPath(dst, "bu00:12345678901234567890", sizeof(dst));
-    zexpect_str_eq("bu00" PATH_SEP "1234567890123456789", dst);
+    zexpect_str_eq("bu00" PATH_SEP "12345678901234567890", dst);
+    Psyz_AdjustPath(dst, "bu00:123456789012345678901", sizeof(dst));
+    zexpect_str_eq("bu00" PATH_SEP "12345678901234567890", dst);
 }
 
 static int test_callback_with_long_name(
@@ -185,12 +207,12 @@ ZTEST(path_adjustment, callback_result_also_truncated) {
     char dst[256] = {0};
     Psyz_AdjustPathCB(test_callback_with_long_name);
     Psyz_AdjustPath(dst, "custom:VERYLONGFILENAME1234567890", sizeof(dst));
-    zexpect_str_eq("custom_dir/VERYLONGFILENAME123", dst);
+    zexpect_str_eq("custom_dir/VERYLONGFILENAME1234", dst);
     Psyz_AdjustPathCB(NULL);
 }
 
 #define LONG_FILENAME_21 "BISLUS-00005aaa195120"
-#define TRUNCATED_NAME_19 "BISLUS-00005aaa1951"
+#define TRUNCATED_NAME_20 "BISLUS-00005aaa19512"
 
 ZTEST_SETUP(truncation) {
     zskip_targets("ps1");
@@ -200,18 +222,18 @@ ZTEST_SETUP(truncation) {
 ZTEST_TEARDOWN(truncation) {
     zskip_targets("ps1");
     remove("bu00/BISLUS-00005aaa195120");
-    remove("bu00/BISLUS-00005aaa1951");
+    remove("bu00/BISLUS-00005aaa19512");
     remove("bu00/AAAA-SHORT");
     rmdir("bu00");
 }
 
 ZTEST(truncation, open_truncates_long_filename) {
-    FILE* f = fopen("bu00/BISLUS-00005aaa1951", "wb");
+    FILE* f = fopen("bu00/BISLUS-00005aaa19512", "wb");
     zassert_ptr_ne(NULL, f);
     fclose(f);
 
     int fd = open("bu00:BISLUS-00005aaa195120", FREAD);
-    zprintf("open() should truncate filename and find the 19-char file\n");
+    zprintf("open() should truncate filename and find the 20-char file\n");
     zexpect_s32_ne(-1, fd);
     if (fd != -1) {
         close(fd);
@@ -228,10 +250,8 @@ ZTEST(truncation, firstfile_truncates_long_filename) {
 
     zprintf("firstfile() should find the file\n");
     zassert_ptr_ne(NULL, pd);
-    zprintf("File name should be truncated to 19 characters\n");
-    zexpect_str_eq(TRUNCATED_NAME_19, d.name);
-    zprintf("Truncated name length should be exactly 19\n");
-    zexpect_u32_eq(19, strlen(d.name));
+    zprintf("File name should be bounded to 20 bytes\n");
+    zexpect_u8array_eq(TRUNCATED_NAME_20, d.name, 20);
 }
 
 ZTEST(truncation, nextfile_truncates_long_filename) {
@@ -253,8 +273,6 @@ ZTEST(truncation, nextfile_truncates_long_filename) {
     pd = nextfile(&d[1]);
     zprintf("nextfile() should find the second file\n");
     zassert_ptr_ne(NULL, pd);
-    zprintf("File name should be truncated to 19 characters\n");
-    zexpect_str_eq(TRUNCATED_NAME_19, d[1].name);
-    zprintf("Truncated name length should be exactly 19\n");
-    zexpect_u32_eq(19, strlen(d[1].name));
+    zprintf("File name should be bounded to 20 bytes\n");
+    zexpect_u8array_eq(TRUNCATED_NAME_20, d[1].name, 20);
 }

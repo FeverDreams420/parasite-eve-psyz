@@ -45,7 +45,7 @@ static void default_adjust_path(char* dst, const char* src, int maxlen) {
 
 static void truncate_filename(char* path) {
     // find the last path separator, then truncate it
-    // memcard save names cannot exceed 20 characters (19 + null terminator)
+    // memcard names have 20 data bytes; host paths additionally need a terminator
     const int max_filename_len = 20;
     char* filename = path;
     char* p = path;
@@ -58,8 +58,8 @@ static void truncate_filename(char* path) {
 
     // truncate if filename exceeds max length
     size_t filename_len = strlen(filename);
-    if (filename_len >= max_filename_len) {
-        filename[max_filename_len - 1] = '\0';
+    if (filename_len > max_filename_len) {
+        filename[max_filename_len] = '\0';
     }
 }
 

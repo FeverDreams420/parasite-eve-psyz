@@ -28,11 +28,10 @@ static void populate_entry(
     // TODO: files bigger than 2GB should be excluded due to .size being an int
 
     // TODO: names longer than 20 characters are not supported
-    if (strlen(src->d_name) >= sizeof(dst->name) - 1) {
+    if (strlen(src->d_name) > sizeof(dst->name)) {
         WARNF("dir name '%s' will be truncated", src->d_name);
     }
-    strncpy(dst->name, src->d_name, sizeof(dst->name) - 1);
-    dst->name[sizeof(dst->name) - 1] = '\0';
+    strncpy(dst->name, src->d_name, sizeof(dst->name));
     dst->attr = 0x10 | 0x40; // not sure what this is
     dst->size = (int)fileStat.st_size;
     dst->next = NULL;
@@ -185,11 +184,11 @@ long my_erase(char* path) {
 int psyz_open(const char* devname, int flag) {
     int oflag = O_RDONLY;
     if ((flag & (FREAD | FWRITE)) == (FREAD | FWRITE)) {
-        flag = O_RDWR;
+        oflag = O_RDWR;
     } else if (flag & FREAD) {
-        flag |= O_RDONLY;
+        oflag = O_RDONLY;
     } else if (flag & FWRITE) {
-        flag |= O_WRONLY;
+        oflag = O_WRONLY;
     }
     if (flag & FNBLOCK) {
         DEBUGF("FNBLOCK ignored for %s", devname);

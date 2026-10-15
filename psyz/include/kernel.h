@@ -155,7 +155,7 @@ struct EXEC {
  * Stores information relating to files registered in the file system.
  */
 struct DIRENTRY {
-    char name[20];         /**< Filename */
+    char name[20];         /**< Up to 20 filename bytes; full names have no NUL. */
     int attr;              /**< Attributes (dependent on file system) */
     int size;              /**< File size (in bytes) */
     struct DIRENTRY* next; /**< Pointer to next file entry (for user) */

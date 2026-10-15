@@ -70,8 +70,8 @@ long psyz_ioctl(int fd, int com, int arg);
  * enumerating the list of files in the specified directory.
  *
  * @note The filename portion (after the last path separator) is automatically
- *       truncated to 19 characters to match PS1 DIRENTRY.name[20] which
- *       requires null-termination for compatibility with SDK string functions.
+ *       truncated to 20 characters to match PS1 DIRENTRY.name[20].
+ *       A full directory name uses all 20 bytes without a trailing NUL.
  *       This truncation is applied regardless of whether callback or internal
  *       adjustment is used.
  *
