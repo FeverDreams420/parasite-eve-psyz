@@ -223,6 +223,8 @@ static GLint uniform_resolution = 0;
 static GLint uniform_tex_vram = 0;
 static GLint uniform_draw_offset = 0;
 static GLuint vram_texture;
+static GLuint rgb24_texture, rgb24_fbo;
+static bool display_rgb24;
 static GLuint vram_fbo = 0;
 static GLuint scratch_texture = 0;
 static GLuint scratch_fbo = 0;
@@ -598,13 +600,32 @@ static void PlatformBackend_Present(void) {
     }
     ApplyPendingInternalRes();
 
-    const int n = (int)internal_res;
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, GetDrawFbo());
+    int n = (int)internal_res;
+    GLuint source_fbo = GetDrawFbo();
+    bool rgb24 = disp_on && display_rgb24 && !debug_show_vram;
+    if (rgb24) {
+        u8* pixels = Sdl3Common_ReadRgb24(display_area.x, display_area.y, display_size.x, display_size.y);
+        if (pixels) {
+            if (!rgb24_texture) glGenTextures(1, &rgb24_texture);
+            if (!rgb24_fbo) glGenFramebuffers(1, &rgb24_fbo);
+            glBindTexture(GL_TEXTURE_2D, rgb24_texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, display_size.x, display_size.y, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+            free(pixels);
+            glBindFramebuffer(GL_FRAMEBUFFER, rgb24_fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rgb24_texture, 0);
+            source_fbo = rgb24_fbo; n = 1;
+        } else rgb24 = false;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, source_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
 
     SDL_Rect src = {display_area.x, display_area.y, display_size.x,
                     display_size.y};
+    if (rgb24) src.x = src.y = 0;
     float game_aspect =
         GetCurrentGameAspectRatio(display_size.x, display_size.y);
     if (debug_show_vram) {
@@ -639,6 +660,8 @@ static void PlatformBackend_Present(void) {
 }
 
 static void QuitPlatform(void) {
+    if (rgb24_texture) { glDeleteTextures(1, &rgb24_texture); rgb24_texture=0; }
+    if (rgb24_fbo) { glDeleteFramebuffers(1, &rgb24_fbo); rgb24_fbo=0; }
     Sdl3Common_Shutdown();
     if (overlay_destroy_cb) {
         overlay_destroy_cb();
@@ -737,6 +760,7 @@ static unsigned char* AllocRgb888Region(int x, int y, int w, int h) {
 unsigned char* Psyz_VideoAllocCapturedFrame(int* w, int* h) {
     *w = display_size.x;
     *h = display_size.y;
+    if (display_rgb24) return Sdl3Common_ReadRgb24(display_area.x, display_area.y, *w, *h);
     return AllocRgb888Region(display_area.x, display_area.y, *w, *h);
 }
 
@@ -847,7 +871,7 @@ void Draw_DisplayVerticalRange(unsigned int start, int unsigned end) {
 
 void Draw_SetDisplayMode(DisplayMode* mode) {
     // TODO the interlace flag is ignored
-    // TODO rgb24 is ignored, the color output will always max the color space
+    display_rgb24 = mode->rgb24;
     if (mode->reversed) {
         WARNF("reverse mode not supported");
     }

@@ -24,6 +24,26 @@
 #include "../draw.h"
 #undef RECT
 
+/* Display mode 24 reads three consecutive VRAM bytes per output pixel;
+ * those bytes are not RGB555 pixels. Keep their 16-bit storage lossless. */
+static unsigned char* Sdl3Common_ReadRgb24(int x, int y, int w, int h) {
+    if (w <= 0 || w > VRAM_W * 2 / 3 || h <= 0 || x < 0 || x >= VRAM_W || y < 0 || y >= VRAM_H)
+        return NULL;
+    int words = (w * 3 + 1) / 2;
+    if (words > VRAM_W - x || h > VRAM_H - y) return NULL;
+    u16* raw = calloc((size_t)words * h, sizeof(*raw));
+    unsigned char* rgb = malloc((size_t)w * h * 3);
+    if (!raw || !rgb) { free(raw); free(rgb); return NULL; }
+    PS1_RECT region = {x, y, words, h};
+    Draw_StoreImage(&region, (u_long*)raw);
+    for (int row = 0; row < h; ++row)
+        for (int byte = 0; byte < w * 3; ++byte)
+            rgb[((size_t)row * w * 3) + byte] =
+                (u8)(raw[(size_t)row * words + byte / 2] >> ((byte & 1) * 8));
+    free(raw);
+    return rgb;
+}
+
 #define VSYNC_NTSC 59.94
 #define VSYNC_PAL 50.0
 

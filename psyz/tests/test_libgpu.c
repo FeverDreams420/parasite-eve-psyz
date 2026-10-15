@@ -128,6 +128,28 @@ static void SetPolyF4Img(POLY_FT4* poly, int x, int y, int w, int h, int u,
 ZTEST_SETUP(gpu) { gpu_setup(); }
 ZTEST_TEARDOWN(gpu) { gpu_teardown(); }
 
+ZTEST(gpu, rgb24_display_reads_packed_vram_bytes) {
+    const int widths[] = {256,320,368,512,640};
+    for (unsigned mode=0;mode<sizeof(widths)/sizeof(widths[0]);++mode) {
+        Psyz_VideoSetInternalResolution(mode==4?2:1);
+        int width=widths[mode],words=(width*3+1)/2;
+        u16* image=malloc((size_t)words*240*2);
+        zassert_ptr_ne(NULL,image);
+        for(int y=0;y<240;++y)for(int x=0;x<words;++x)
+            image[y*words+x]=(u16)((x*197+y*911)^0xace1);
+        RECT rect={3,240,words,240};LoadImage(&rect,(u_long*)image);DrawSync(0);
+        DISPENV display;SetDefDispEnv(&display,3,240,width,240);display.isrgb24=1;
+        PutDispEnv(&display);
+        VSync(0); /* Exercise the packed-RGB presentation path as well as readback. */
+        int w,h;unsigned char* pixels=Psyz_VideoAllocCapturedFrame(&w,&h);
+        zassert_ptr_ne(NULL,pixels);zassert_s32_eq(width,w);zassert_s32_eq(240,h);
+        for(int y=0;y<240;++y)for(int x=0;x<width*3;++x)
+            zassert_u8_eq((u8)(image[y*words+x/2]>>((x&1)*8)),pixels[y*width*3+x]);
+        free(pixels);free(image);
+    }
+    Psyz_VideoSetInternalResolution(1);
+}
+
 ZTEST(gpu, drawprim_packed_sprite_and_native_commands) {
     u16 palette[16] = {0, 0xC210};
     u16 texture = 0x1111;

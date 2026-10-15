@@ -65,6 +65,8 @@ typedef struct {
 static SDL_GPUDevice* device = NULL;
 static bool swapchain_ok = false;
 static SDL_GPUTexture* vram_render = NULL;
+static SDL_GPUTexture* rgb24_display = NULL;
+static bool display_rgb24;
 static SDL_GPUTexture* vram_sample = NULL;
 static SDL_GPUSampler* vram_sampler = NULL;
 static SDL_GPUTexture* scaled_vram_render = NULL;
@@ -708,6 +710,32 @@ static void ApplyPendingInternalRes(void) {
     INFOF("internal resolution set to %dx (%dx%d)", n, VRAM_W * n, VRAM_H * n);
 }
 
+static SDL_GPUTexture* PrepareRgb24Display(void) {
+    u8* rgb = Sdl3Common_ReadRgb24(display_area.x, display_area.y, display_size.x, display_size.y);
+    if (!rgb) return NULL;
+    if (!rgb24_display) {
+        SDL_GPUTextureCreateInfo info = {
+            .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+            .width = VRAM_W, .height = VRAM_H, .layer_count_or_depth = 1, .num_levels = 1};
+        rgb24_display = SDL_CreateGPUTexture(device, &info);
+    }
+    u8* mapped = rgb24_display ? SDL_MapGPUTransferBuffer(device, tex_upload_transfer, true) : NULL;
+    if (!mapped) { free(rgb); return NULL; }
+    for (int i = 0; i < display_size.x * display_size.y; ++i) {
+        memcpy(mapped + i * 4, rgb + i * 3, 3); mapped[i * 4 + 3] = 255;
+    }
+    free(rgb); SDL_UnmapGPUTransferBuffer(device, tex_upload_transfer);
+    SDL_GPUCommandBuffer* cmd = AcquireCmd();
+    if (!cmd) return NULL;
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureTransferInfo src = {.transfer_buffer = tex_upload_transfer,
+        .pixels_per_row = display_size.x, .rows_per_layer = display_size.y};
+    SDL_GPUTextureRegion dst = {.texture = rgb24_display, .w = display_size.x, .h = display_size.y, .d = 1};
+    SDL_UploadToGPUTexture(copy, &src, &dst, false); SDL_EndGPUCopyPass(copy);
+    return rgb24_display;
+}
+
 static void PlatformBackend_Present(void) {
     if (UseSoftwareBackend()) {
         finish_time = SDL_GetPerformanceCounter();
@@ -723,6 +751,7 @@ static void PlatformBackend_Present(void) {
 
     ApplyPendingInternalRes();
 
+    SDL_GPUTexture* rgb24 = disp_on && display_rgb24 && !debug_show_vram ? PrepareRgb24Display() : NULL;
     SDL_GPUCommandBuffer* cmd = AcquireCmd();
     if (!cmd) {
         return;
@@ -754,6 +783,7 @@ static void PlatformBackend_Present(void) {
                     .w = (Uint32)display_size.x * n,
                     .h = (Uint32)display_size.y * n,
                 };
+                if (rgb24) src = (SDL_GPUBlitRegion){.texture=rgb24, .w=display_size.x, .h=display_size.y};
                 float game_aspect =
                     GetCurrentGameAspectRatio(display_size.x, display_size.y);
                 if (debug_show_vram) {
@@ -825,6 +855,7 @@ static void QuitPlatform(void) {
             SDL_ReleaseGPUGraphicsPipeline(device, pipe_clear);
             pipe_clear = NULL;
         }
+        if (rgb24_display) { SDL_ReleaseGPUTexture(device, rgb24_display); rgb24_display=NULL; }
         if (vram_render) {
             SDL_ReleaseGPUTexture(device, vram_render);
             vram_render = NULL;
@@ -955,6 +986,7 @@ static unsigned char* AllocRgb888Region(int x, int y, int w, int h) {
 unsigned char* Psyz_VideoAllocCapturedFrame(int* w, int* h) {
     *w = display_size.x;
     *h = display_size.y;
+    if (display_rgb24) return Sdl3Common_ReadRgb24(display_area.x, display_area.y, *w, *h);
     return AllocRgb888Region(display_area.x, display_area.y, *w, *h);
 }
 
@@ -1045,9 +1077,9 @@ void Draw_DisplayEnable(unsigned int on) {
 }
 
 void Draw_DisplayArea(unsigned int x, unsigned int y) {
-    if (UseSoftwareBackend()) return;
     display_area.x = (int)x;
     display_area.y = (int)y;
+    if (UseSoftwareBackend()) return;
 
     Draw_FlushBuffer();
     ApplyDisplayPendingChanges();
@@ -1066,9 +1098,8 @@ void Draw_DisplayVerticalRange(unsigned int start, int unsigned end) {
 }
 
 void Draw_SetDisplayMode(DisplayMode* mode) {
-    if (UseSoftwareBackend()) { UpdateTargetFramerate(mode->pal ? VSYNC_PAL : VSYNC_NTSC); return; }
+    display_rgb24 = mode->rgb24;
     // TODO the interlace flag is ignored
-    // TODO rgb24 is ignored, the color output will always max the color space
     if (mode->reversed) {
         WARNF("reverse mode not supported");
     }
@@ -1094,6 +1125,7 @@ void Draw_SetDisplayMode(DisplayMode* mode) {
         }
     }
     display_size.y = mode->vertical_resolution ? 480 : 240;
+    if (UseSoftwareBackend()) { UpdateTargetFramerate(mode->pal ? VSYNC_PAL : VSYNC_NTSC); return; }
     ApplyDisplayPendingChanges();
 
     double new_target_fps = mode->pal ? VSYNC_PAL : VSYNC_NTSC;
