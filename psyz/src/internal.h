@@ -35,6 +35,9 @@ void Psyz_KernelRaise(unsigned int desc, unsigned int spec);
 // the audio thread can use it.
 void Psyz_KernelPost(void (*fn)(void));
 
+// Completes a native synchronous DMA transfer without recursive callbacks.
+void Psyz_DmaComplete(unsigned channel);
+
 // Raises the vblank interrupt; VSync calls it once per emulated frame.
 void Psyz_KernelVBlank(void);
 

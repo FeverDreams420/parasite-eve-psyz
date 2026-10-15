@@ -740,7 +740,7 @@ ZTEST(spu, AdpcmLoopRepeatJumpsToLoopAddr) {
 #define ADSR_DECAY(shift) (((shift) & 15) << 4)
 #define ADSR_SUSTAIN(step, shift, level, direction, exp)                       \
     ((((step) & 3) << 22) | (((shift) & 31) << 24) | (((level) & 15) << 0) |   \
-     (!!(direction) << 30) | (!!(exp) << 31))
+     (!!(direction) << 30) | ((uint32_t)!!(exp) << 31))
 #define ADSR_RELEASE(shift, exp) ((((shift) & 31) << 16) | (!!(exp) << 21))
 
 enum { kAdsrSampleAddr = 0x1080 };

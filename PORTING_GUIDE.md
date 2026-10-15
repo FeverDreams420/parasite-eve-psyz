@@ -4,6 +4,40 @@ This guide provides comprehensive instructions for porting PlayStation 1 games a
 
 ## Code Modifications
 
+### Native MDEC in the Parasite Eve fork
+
+`src/psyz/libpress.c` now executes MDEC decode, quantization and scale commands
+on the CPU. Run-level words and table transfers remain packed 32-bit PS1 data;
+output buffers do not require native `u_long` alignment. The implementation
+supports 4/8-bit monochrome and 15/24-bit color, signed output, STP, partial
+output transfers and input/output completion callbacks. Transfers complete
+synchronously; callbacks started by callbacks are queued until the current
+callback returns. This is an SDK execution model, not cycle-accurate DMA/FIFO
+emulation. The legacy two-argument `DecDCTvlc` remains unsupported; Parasite Eve
+uses its original native `DecDCTvlc2` in the game repository.
+
+The integer transform follows the command/data format and low-level IDCT
+outlined in [PSX-SPX's MDEC documentation](https://psx-spx.consoledev.net/macroblockdecodermdec/).
+Hardware rounding and color conversion are not proven pixel exact. A comparison
+of all 150 FMV000 RGB24 frames against FFmpeg measured a mean absolute channel
+difference of 0.1991 and maximum 10. FFmpeg is an independent decoder, not a
+hardware oracle; these measurements are not a PS1 fidelity acceptance gate.
+
+Five native MDEC tests pass with ASan/UBSan/function: neutral blocks across all
+formats/sign/STP modes, queued completion callbacks and split output, malformed
+commands/output bounds, quantization/scale changes, and 128 generated streams.
+The original game player's 149 frames/2980 slice uploads match whole-frame MDEC
+transfers in headless VRAM and advance four VBlanks per rendered frame. A fully
+instrumented game/SDK/SDL run also exposed an empty-OT read past its native tag;
+GPU enqueue now avoids reading a command byte when packet length is zero.
+The SPU test's bit-31 flag now uses an unsigned shift so UBSan can run the suite.
+
+The full SDK headless suite is **not passing**: the latest isolated run reports
+306 passes, 46 failures and one skip, including framebuffer-reference and event
+timing failures. Full SDK/headless conformance, hardware MDEC pixel references,
+movie XA audio and complete game integration remain open.
+
+
 When adapting your PlayStation 1 code to work with PSY-Z, several key modifications are required to ensure proper functionality across different architectures and platforms while sharing the same PlayStation 1 code base.
 
 ### Ordered Tables

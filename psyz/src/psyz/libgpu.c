@@ -181,7 +181,7 @@ static void GPU_Enqueue(u_long* packets) {
             // Gpu code is usually written to a u_long array, which will work
             // fine on both 32-bit and 64-bit compiled code.
             // But primitives are mapped from structs, we need to align the data
-            int code = getcode(env) & ~3;
+            int code = env->len ? getcode(env) & ~3 : 0;
             if (code >= 0x20 && code < 0x80) {
                 // it is a prim, we need to split
                 u32* prim_data = (u32*)env->code;

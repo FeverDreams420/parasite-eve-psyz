@@ -90,20 +90,28 @@ void DecDCTin(u_long* buf, int mode) {
 }
 void DecDCTout(u_long* buf, int size) { MDEC_out(buf, size); }
 int DecDCTinSync(int mode) {
+#ifdef __psyz
+    return MDEC_in_sync();
+#else
     int result;
     if (mode == 0)
         result = MDEC_in_sync();
     else
         result = (MDEC_status() >> 29) & 1;
     return result;
+#endif
 }
 int DecDCToutSync(int mode) {
+#ifdef __psyz
+    return MDEC_out_sync();
+#else
     int result;
     if (mode == 0)
         result = MDEC_out_sync();
     else
         result = (MDEC_status() >> 24) & 1;
     return result;
+#endif
 }
 #ifdef __psyz
 DecDCCb DecDCTinCallback(DecDCCb cb) { return DMACallback(0, cb); }
