@@ -175,6 +175,33 @@ ZTEST(gpu, display_vertical_range_excludes_adjacent_vram_rows) {
     }
 }
 
+ZTEST(gpu, rotated_triangle_samples_signed_affine_uv) {
+    u16 texels[16*16];
+    for(int y=0;y<16;++y)for(int x=0;x<16;++x)
+        texels[y*16+x]=(1+x)|((1+y)<<5)|(3<<10);
+    RECT texture={512,0,16,16};LoadImage(&texture,(u_long *)texels);DrawSync(0);
+    const u8 uv[][6]={{13,2,2,13,12,12},{2,13,13,2,12,12},
+                     {2,12,12,2,13,13},{13,12,12,13,2,2}};
+    const short samples[][2]={{23,24},{24,23},{28,22},{22,28},{30,25}};
+    for(unsigned mode=0;mode<4;++mode){
+        POLY_FT3 triangle;SetPolyFT3(&triangle);setShadeTex(&triangle,1);
+        setXY3(&triangle,16,16,48,20,20,48);
+        setUV3(&triangle,uv[mode][0],uv[mode][1],uv[mode][2],uv[mode][3],uv[mode][4],uv[mode][5]);
+        triangle.tpage=GetTPage(2,0,512,0);triangle.clut=0;
+        DrawPrim(&triangle);DrawSync(0);
+        for(unsigned sample=0;sample<5;++sample){
+            int x=samples[sample][0],y=samples[sample][1];
+            int a=(48-x)*(48-y)-(20-y)*(20-x);
+            int b=(20-x)*(16-y)-(48-y)*(16-x);
+            int c=1008-a-b;
+            int u=(a*uv[mode][0]+b*uv[mode][2]+c*uv[mode][4])/1008;
+            int v=(a*uv[mode][1]+b*uv[mode][3]+c*uv[mode][5])/1008;
+            u16 pixel;RECT point={x,y,1,1};StoreImage(&point,(u_long *)&pixel);DrawSync(0);
+            zassert_u16_eq(texels[v*16+u],pixel&0x7fff);
+        }
+    }
+}
+
 ZTEST(gpu, drawprim_packed_sprite_and_native_commands) {
     u16 palette[16] = {0, 0xC210};
     u16 texture = 0x1111;

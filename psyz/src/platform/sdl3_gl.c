@@ -118,8 +118,7 @@ static const char fragment_shader_body[] = {
     "uniform sampler2D texVram;\n"
     "\n"
     "uvec2 resolveTexel() {\n"
-    "    vec2 texelStep = vec2(abs(dFdx(rawUV.x)), abs(dFdy(rawUV.y)));\n"
-    "    vec2 uv = rawUV - 0.5 * texelStep + 1.0 / 512.0;\n"
+    "    vec2 uv = rawUV - 0.5 * (dFdx(rawUV) + dFdy(rawUV)) + 1.0 / 512.0;\n"
     "    uvec2 texel = uvec2(clamp(floor(uv), vec2(0.0), vec2(255.0)));\n"
     "    return (texel & texWindow.xy) | texWindow.zw;\n"
     "}\n"
@@ -1001,9 +1000,7 @@ int Draw_PushPrim(u_long* packets, int max_len) {
                 len++;
             }
 
-            if (isTextured) {
-                FixupFlipUV(vertex_cur, code & EXTRA_VERTEX);
-            } else {
+            if (!isTextured) {
                 clut = -1;
                 tpage = cur_tpage | TPAGE_NOTEXTURE;
             }

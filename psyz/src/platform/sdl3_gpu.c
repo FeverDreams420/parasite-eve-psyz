@@ -1212,9 +1212,7 @@ int Draw_PushPrim(u_long* packets, int max_len) {
                 len++;
             }
 
-            if (isTextured) {
-                FixupFlipUV(vertex_cur, code & EXTRA_VERTEX);
-            } else {
+            if (!isTextured) {
                 clut = -1;
                 tpage = cur_tpage | TPAGE_NOTEXTURE;
             }
