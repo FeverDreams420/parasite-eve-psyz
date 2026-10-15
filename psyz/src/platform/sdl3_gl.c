@@ -225,6 +225,7 @@ static GLint uniform_draw_offset = 0;
 static GLuint vram_texture;
 static GLuint rgb24_texture, rgb24_fbo;
 static bool display_rgb24;
+static bool display_double_height;
 static GLuint vram_fbo = 0;
 static GLuint scratch_texture = 0;
 static GLuint scratch_fbo = 0;
@@ -866,6 +867,7 @@ void Draw_DisplayHorizontalRange(unsigned int start, unsigned int end) {
 
 void Draw_DisplayVerticalRange(unsigned int start, int unsigned end) {
     set_disp_vert = (int)(end - start);
+    display_size.y = set_disp_vert * (display_double_height ? 2 : 1);
     ApplyDisplayPendingChanges();
 }
 
@@ -896,7 +898,8 @@ void Draw_SetDisplayMode(DisplayMode* mode) {
             break;
         }
     }
-    display_size.y = mode->vertical_resolution ? 480 : 240;
+    display_double_height = mode->vertical_resolution;
+    display_size.y = set_disp_vert * (display_double_height ? 2 : 1);
     ApplyDisplayPendingChanges();
 
     double new_target_fps = mode->pal ? VSYNC_PAL : VSYNC_NTSC;

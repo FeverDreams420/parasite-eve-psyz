@@ -150,6 +150,31 @@ ZTEST(gpu, rgb24_display_reads_packed_vram_bytes) {
     Psyz_VideoSetInternalResolution(1);
 }
 
+ZTEST(gpu, display_vertical_range_excludes_adjacent_vram_rows) {
+    const int heights[]={224,240,224,240};
+    for(unsigned mode=0;mode<4;++mode){
+        int height=heights[mode];
+        int words=mode>=2?480:320;
+        u16 *image=calloc((size_t)words*240,sizeof(*image));zassert_ptr_ne(NULL,image);
+        for(int y=0;y<240;++y)for(int x=0;x<320;++x){
+            if(mode>=2){unsigned char *pixel=(unsigned char *)(image+y*words)+x*3;
+                pixel[y<height?0:1]=255;}
+            else image[y*words+x]=y<height?0x001f:0x03e0;
+        }
+        RECT region={0,224,words,240};LoadImage(&region,(u_long *)image);DrawSync(0);
+        DISPENV display;SetDefDispEnv(&display,0,224,320,height);
+        display.screen.y=height==224?8:0;display.screen.h=height;display.isrgb24=mode>=2;
+        PutDispEnv(&display);VSync(0);
+        int width,captured_height;
+        unsigned char *pixels=Psyz_VideoAllocCapturedFrame(&width,&captured_height);
+        zassert_ptr_ne(NULL,pixels);zassert_s32_eq(320,width);
+        zassert_s32_eq(height,captured_height);
+        for(int i=0;i<width*height;++i){zassert_u8_eq(255,pixels[i*3]);
+            zassert_u8_eq(0,pixels[i*3+1]);zassert_u8_eq(0,pixels[i*3+2]);}
+        free(pixels);free(image);
+    }
+}
+
 ZTEST(gpu, drawprim_packed_sprite_and_native_commands) {
     u16 palette[16] = {0, 0xC210};
     u16 texture = 0x1111;

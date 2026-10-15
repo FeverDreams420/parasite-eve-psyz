@@ -67,6 +67,7 @@ static bool swapchain_ok = false;
 static SDL_GPUTexture* vram_render = NULL;
 static SDL_GPUTexture* rgb24_display = NULL;
 static bool display_rgb24;
+static bool display_double_height;
 static SDL_GPUTexture* vram_sample = NULL;
 static SDL_GPUSampler* vram_sampler = NULL;
 static SDL_GPUTexture* scaled_vram_render = NULL;
@@ -920,6 +921,16 @@ void ResetPlatform(void) {
 }
 
 static bool DownloadVramRegionAsRGBA8888(int x, int y, int w, int h, u8* out) {
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x >= VRAM_W || y >= VRAM_H ||
+        w > VRAM_W - x || h > VRAM_H - y) return false;
+    if (UseSoftwareBackend()) {
+        u16 *words = malloc((size_t)w * h * sizeof(*words));
+        if (!words) return false;
+        PS1_RECT region = {x,y,w,h};
+        software_rasterizer.store_image(&region,(u_long *)words);
+        ConvertRgb5551ToRgba8888(words,out,(size_t)w*h);
+        free(words);return true;
+    }
     SDL_GPUCommandBuffer* cmd = AcquireCmd();
     if (!cmd) {
         return false;
@@ -952,7 +963,7 @@ static bool DownloadVramRegionAsRGBA8888(int x, int y, int w, int h, u8* out) {
 }
 
 static unsigned char* AllocRgb888Region(int x, int y, int w, int h) {
-    if (!device || !vram_render) {
+    if (!UseSoftwareBackend() && (!device || !vram_render)) {
         ERRORF("GPU device not initialized");
         return NULL;
     }
@@ -1092,8 +1103,9 @@ void Draw_DisplayHorizontalRange(unsigned int start, unsigned int end) {
 }
 
 void Draw_DisplayVerticalRange(unsigned int start, int unsigned end) {
-    if (UseSoftwareBackend()) return;
     set_disp_vert = (int)(end - start);
+    display_size.y = set_disp_vert * (display_double_height ? 2 : 1);
+    if (UseSoftwareBackend()) return;
     ApplyDisplayPendingChanges();
 }
 
@@ -1124,7 +1136,8 @@ void Draw_SetDisplayMode(DisplayMode* mode) {
             break;
         }
     }
-    display_size.y = mode->vertical_resolution ? 480 : 240;
+    display_double_height = mode->vertical_resolution;
+    display_size.y = set_disp_vert * (display_double_height ? 2 : 1);
     if (UseSoftwareBackend()) { UpdateTargetFramerate(mode->pal ? VSYNC_PAL : VSYNC_NTSC); return; }
     ApplyDisplayPendingChanges();
 
