@@ -2746,7 +2746,8 @@ long RotAverageNclip3(SVECTOR* v0, SVECTOR* v1, SVECTOR* v2, int* sxy0,
     RTPT_BODY(1, 0, s0, s1, s2);
     fl = FLAG;
     NCLIP();
-    if (MAC0 > 0) {
+    const int clip = MAC0;
+    if (clip > 0) {
         int ir0 = IR0;
         AVSZ3();
         *flag = (int)fl;
@@ -2755,10 +2756,10 @@ long RotAverageNclip3(SVECTOR* v0, SVECTOR* v1, SVECTOR* v2, int* sxy0,
         *(unsigned int*)sxy2 = s2;
         *p = ir0;
         *otz = OTZ;
-        return MAC0;
+        return clip;
     }
     *flag = (int)fl;
-    return MAC0;
+    return clip;
 }
 
 long RotAverageNclip4(
@@ -2771,7 +2772,8 @@ long RotAverageNclip4(
     RTPT_BODY(1, 0, s0, s1, s2);
     fl1 = FLAG;
     NCLIP();
-    if (MAC0 > 0) {
+    const int clip = MAC0;
+    if (clip > 0) {
         int ir0;
         V0 = *v3;
         RTPS_BODY(1, 0, s3);
@@ -2785,10 +2787,10 @@ long RotAverageNclip4(
         *p = ir0;
         *flag = (int)(fl1 | fl2);
         *otz = OTZ;
-        return MAC0;
+        return clip;
     }
     *flag = (int)fl1;
-    return MAC0;
+    return clip;
 }
 
 extern short s_rsqrt_table[];
