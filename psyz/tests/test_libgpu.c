@@ -128,6 +128,39 @@ static void SetPolyF4Img(POLY_FT4* poly, int x, int y, int w, int h, int u,
 ZTEST_SETUP(gpu) { gpu_setup(); }
 ZTEST_TEARDOWN(gpu) { gpu_teardown(); }
 
+ZTEST(gpu, drawprim_packed_sprite_and_native_commands) {
+    u16 palette[16] = {0, 0xC210};
+    u16 texture = 0x1111;
+    RECT palette_rect = {0, 480, 16, 1}, texture_rect = {512, 256, 1, 1};
+    LoadImage(&palette_rect, (u_long*)palette);
+    LoadImage(&texture_rect, (u_long*)&texture);
+    DrawSync(0);
+    DR_TPAGE page;
+    DR_AREA area;
+    RECT clip = {13, 14, 2, 1};
+    SPRT sprite = {0};
+    SetDrawTPage(&page, 0, 0, GetTPage(0, 0, 512, 256));
+    SetDrawArea(&area, &clip);
+    setSprt(&sprite);
+    setRGB0(&sprite, 128, 128, 128);
+    setXY0(&sprite, 12, 14);
+    setUV0(&sprite, 0, 0);
+    setWH(&sprite, 4, 1);
+    sprite.clut = GetClut(0, 480);
+    DrawPrim(&page);
+    DrawPrim(&area);
+    DrawPrim(&sprite);
+    DrawSync(0);
+    RECT result_rect = {12, 14, 4, 1};
+    u16 result[4] = {0};
+    StoreImage(&result_rect, (u_long*)result);
+    DrawSync(0);
+    zexpect_u32_eq(0, result[0]);
+    zexpect_u32_eq(0xC210, result[1]);
+    zexpect_u32_eq(0xC210, result[2]);
+    zexpect_u32_eq(0, result[3]);
+}
+
 ZTEST(gpu, fnt_print) {
     FntLoad(960, 256);
     SetDumpFnt(FntOpen(4, 4, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 512));

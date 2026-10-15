@@ -221,10 +221,20 @@ static int GPU_DataRead(RECT* rect, u_long* data) {
     return 0;
 }
 static int psyz_cwb(u32* data, s32 n) {
-    if (n > 0) {
-        Draw_PushPrim((u_long*)data, n);
+    if (n <= 0) return 0;
+    if (!data || (size_t)n > LEN(queue_buf)) return -1;
+    Psyz_GpuExeque();
+    /* DrawPrim uses the same mixed ABI as OT packets: packed 32-bit
+     * primitive fields, native command words for DR_* packets. It must
+     * also dispatch E1/E3/etc commands rather than treating them as shapes. */
+    unsigned code = (data[0] >> 24) & 0xFF;
+    if (sizeof(u_long) == 8 && code >= 0x20 && code < 0x80) {
+        for (int i = 0; i < n; ++i) queue_buf[i] = data[i];
+    } else {
+        memcpy(queue_buf, data, (size_t)n * sizeof(u_long));
     }
-    return 0;
+    queue_len = n;
+    return Psyz_GpuExeque();
 }
 
 static int _param(int x) { return 0; }
