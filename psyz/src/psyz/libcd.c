@@ -486,6 +486,7 @@ static struct {
     unsigned int phase; // 16.16 fractional position into the input stream
     int cur_abs_sector; // absolute last sector used, for CdlGetlocL
     int stream_ended;   // filtered file/channel ran out, emit silence
+    int silent_sectors_pending;
 } xa;
 
 static void xa_reset_stream(void) {
@@ -497,6 +498,7 @@ static void xa_reset_stream(void) {
     memset(xa.rh_r, 0, sizeof(xa.rh_r));
     xa.phase = 0;
     xa.stream_ended = 0;
+    xa.silent_sectors_pending = 0;
 }
 
 static int xa_sector_matches(unsigned char file, unsigned char channel) {
@@ -523,7 +525,7 @@ static void xa_decode_28(const unsigned char* blk, int sub, int nibble,
     for (int j = 0; j < 28; j++) {
         const unsigned char byte = blk[16 + sub + j * 4];
         const int t = s4((byte >> (nibble * 4)) & 0x0F);
-        const int s = (t << shift) + (((*prev) * f0 + (*prev2) * f1 + 32) / 64);
+        const int s = t * (1 << shift) + (((*prev) * f0 + (*prev2) * f1 + 32) / 64);
         dst[j * stride] = clamp16(s);
         *prev2 = *prev;
         *prev = s;
@@ -573,12 +575,26 @@ static int xa_decode_user_mono_4bit(const unsigned char* user) {
 static int xa_read_and_decode_sector(void) {
     unsigned char sector[SECTOR_SIZE];
     int gap = 0;
-    while (!xa.stream_ended) {
-        const size_t n = fread(sector, 1, SECTOR_SIZE, track_file);
+    /* Once the selected clip ends, keep consuming the physical image while
+     * emitting silence. Otherwise GetlocL freezes and bounded image readers
+     * never reach EOF. One silent 2016-frame block lasts 8 sectors at 2x
+     * (4 at 1x). Do not decode unrelated clips after the filter gap. */
+    int silent_sectors = (CD_mode & CdlModeSpeed) ? 8 : 4;
+    if (xa.silent_sectors_pending) {
+        xa.silent_sectors_pending = xa.silent_sectors_pending > silent_sectors
+            ? xa.silent_sectors_pending - silent_sectors : 0;
+        goto silence;
+    }
+    while (!xa.stream_ended || silent_sectors-- > 0) {
+        const size_t n = disk_read_cb
+            ? (size_t)disk_read_cb(&(struct PsyzCdRead){
+                (unsigned int)(xa.cur_abs_sector + 1), SECTOR_SIZE, sector})
+            : fread(sector, 1, SECTOR_SIZE, track_file);
         if (n != SECTOR_SIZE) {
             return 0; // EOF or short read
         }
         xa.cur_abs_sector++;
+        if (xa.stream_ended) continue;
         const unsigned char file = sector[0x10];
         const unsigned char channel = sector[0x11];
         const unsigned char submode = sector[0x12];
@@ -587,6 +603,10 @@ static int xa_read_and_decode_sector(void) {
             // data sector or filtered out, skip from XA stream
             if (++gap >= XA_MAX_SECTOR_GAP) {
                 xa.stream_ended = 1;
+                /* The search already consumed these sectors. Account for
+                 * their elapsed silence before reading the rest of the tail. */
+                xa.silent_sectors_pending = gap - silent_sectors;
+                goto silence;
             }
             continue;
         }
@@ -606,6 +626,7 @@ static int xa_read_and_decode_sector(void) {
         xa.decoded_pos = 0;
         return 1;
     }
+silence:
     memset(xa.decoded, 0, sizeof(xa.decoded));
     xa.decoded_count = XA_DECODED_MAX_FRAMES / 2;
     xa.decoded_pos = 0;
@@ -656,7 +677,7 @@ static size_t xa_pull_samples(short* buf, size_t max_frames) {
     size_t written = 0;
     int hit_eof = 0;
     Psyz_AudioLock();
-    if (!is_playing || !track_file || !xa.active) {
+    if (!is_playing || (!track_file && !disk_read_cb) || !xa.active) {
         goto end;
     }
     // Prime Hermite ring on first call so we have y0..y2 valid.
@@ -694,6 +715,7 @@ end:
     if (hit_eof) {
         is_playing = 0;
         xa.active = 0;
+        if (xa.cur_abs_sector >= 0) CdIntToPos(xa.cur_abs_sector, &CD_pos);
     }
     Psyz_AudioUnlock();
     if (hit_eof) {
@@ -842,7 +864,7 @@ static void psyz_xa_read(void) {
     }
     data_read_active = 0;
     data_sector_valid = 0;
-    if (open_track_at_cd_pos()) {
+    if (!disk_read_cb && open_track_at_cd_pos()) {
         return;
     }
     Psyz_AudioLock();
@@ -1114,6 +1136,7 @@ static int CD_command(u_char com, u_char* param, u_char* result, s32 arg3) {
             return -2;
         }
         // always return XA sector if XA playback is active
+        Psyz_AudioLock();
         int cur = xa.active ? xa.cur_abs_sector : CdPosToInt(&CD_pos);
         if (cur < 0) {
             cur = 0;
@@ -1128,8 +1151,8 @@ static int CD_command(u_char com, u_char* param, u_char* result, s32 arg3) {
         result[5] = xa.filter_channel;
         result[6] = 0x00;
         result[7] = 0x00;
-        u_char status_result[8] = {(u_char)CD_status, 0, 0, 0, 0, 0, 0, 0};
-        cache_last_result(status_result, sizeof(status_result), CdlComplete);
+        cache_last_result(result, 8, CdlComplete);
+        Psyz_AudioUnlock();
         break;
     }
     case CdlGetlocP:

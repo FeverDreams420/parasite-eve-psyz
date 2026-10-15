@@ -59,7 +59,9 @@ size_t Psyz_CdPullSamples(short* out, size_t num_frames);
 /**
  * @brief Set callback invoked when a disk read is triggered
  *
- * If cb is NULL or returns a negative value, PSY-Z falls back to CD emulation.
+ * Used for data reads and XA streaming. XA requests contain a full 2352-byte
+ * sector at the requested LBA; return exactly size bytes, or -1 on failure.
+ * A NULL callback uses the mounted CUE. Callback errors end the read/stream.
  *
  * @param cb Disk read callback, or NULL to clear
  */

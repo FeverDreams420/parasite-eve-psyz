@@ -716,6 +716,16 @@ static void build_xa_sector(unsigned char* sector, int sector_idx) {
     build_xa_sector_file(sector, sector_idx, 0x01);
 }
 
+static unsigned char* xa_callback_data;
+static unsigned int xa_callback_sectors, xa_callback_reads;
+static int xa_image_read(struct PsyzCdRead* read) {
+    if (read->size != SECTOR_SIZE || read->sector >= xa_callback_sectors)
+        return -1;
+    memcpy(read->buffer, xa_callback_data + read->sector * SECTOR_SIZE, SECTOR_SIZE);
+    ++xa_callback_reads;
+    return SECTOR_SIZE;
+}
+
 static int make_dir(const char* path) {
 #ifndef _WIN32
     return mkdir(path, 0755);
@@ -807,6 +817,89 @@ ZTEST(libcd_playback, cdda_playback) {
         }
         zassert_s16_eq(0x2FFE, out[i * 2 + 1]);
     }
+}
+
+ZTEST(libcd_playback, xa_callback_matches_cue_and_stops_at_extent) {
+    enum { sectors = 8, frames = sectors * 2352 + 128 };
+    unsigned short* raw = test_calloc(sectors * SECTOR_SIZE / 2, 2);
+    short* expected = test_calloc(frames * 2, sizeof(short));
+    short* actual = test_calloc(frames * 2, sizeof(short));
+    for (int i = 0; i < sectors; ++i)
+        build_xa_sector((unsigned char*)raw + i * SECTOR_SIZE, i);
+    mount_bin_cue_pair(raw, sectors * SECTOR_SIZE / 2, "MODE2/2352");
+    CdReset(1);
+    u_char mode = CdlModeSpeed | CdlModeRT | CdlModeSF, filter[2] = {1, 0};
+    CdControlB(CdlSetmode, &mode, NULL);
+    CdControlB(CdlSetfilter, filter, NULL);
+    Psyz_AudioPause();
+    CdlLOC loc;
+    CdIntToPos(0, &loc);
+    CdControlB(CdlSetloc, (u_char*)&loc, NULL);
+    CdControlB(CdlReadN, NULL, NULL);
+    size_t count = Psyz_CdPullSamples(expected, frames);
+    zexpect_s32_eq(1, count > 64 && count < frames);
+    zexpect_s32_eq(0x1000, expected[128]);
+    CdControlB(CdlStop, NULL, NULL);
+    Psyz_CdSetDiskPath(NULL);
+    xa_callback_data = (unsigned char*)raw;
+    xa_callback_sectors = sectors;
+    xa_callback_reads = 0;
+    Psyz_CdSetReadCB(xa_image_read);
+    CdControlB(CdlSetloc, (u_char*)&loc, NULL);
+    CdControlB(CdlReadN, NULL, NULL);
+    zexpect_s32_eq(count, Psyz_CdPullSamples(actual, frames));
+    zexpect_s32_eq(0, memcmp(expected, actual, count * 2 * sizeof(short)));
+    zexpect_s32_eq(sectors, xa_callback_reads);
+    zexpect_s32_eq(0, Psyz_CdPullSamples(actual, 128));
+    /* A truncated callback extent ends the stream, with no CUE fallback. */
+    xa_callback_sectors = 2;
+    CdControlB(CdlSetloc, (u_char*)&loc, NULL);
+    CdControlB(CdlReadN, NULL, NULL);
+    size_t short_count = Psyz_CdPullSamples(actual, frames);
+    zexpect_s32_eq(1, short_count > 64 && short_count < count);
+    zexpect_s32_eq(0, memcmp(expected, actual, short_count * 2 * sizeof(short)));
+    CdControlB(CdlStop, NULL, NULL);
+    Psyz_CdSetReadCB(NULL);
+}
+
+ZTEST(libcd_playback, xa_callback_silent_tail_reaches_extent) {
+    enum { sectors = 144, frames = 8 * 2352 * 4 };
+    unsigned char* raw = test_calloc(sectors, SECTOR_SIZE);
+    short* out = test_calloc(frames * 2, sizeof(short));
+    for (int i = 0; i < sectors; ++i)
+        build_xa_sector_file(raw+i*SECTOR_SIZE,i,i>=8 && i<136?2:1);
+    CdReset(1);
+    u_char mode=CdlModeSpeed|CdlModeRT|CdlModeSF, filter[2]={1,0};
+    CdControlB(CdlSetmode,&mode,NULL);CdControlB(CdlSetfilter,filter,NULL);
+    Psyz_AudioPause();
+    xa_callback_data=raw;xa_callback_sectors=sectors;xa_callback_reads=0;
+    Psyz_CdSetReadCB(xa_image_read);
+    CdlLOC loc;CdIntToPos(0,&loc);CdControlB(CdlSetloc,(u_char*)&loc,NULL);
+    CdControlB(CdlReadN,NULL,NULL);
+    size_t count=Psyz_CdPullSamples(out,frames);
+    zexpect_s32_eq(sectors,xa_callback_reads);
+    zexpect_s32_eq(1,count>8*2352 && count<frames);
+    zexpect_s32_eq(0x1000,out[128]);
+    for(size_t i=8*2352+64;i<count;++i){
+        zassert_s16_eq(0,out[i*2]);zassert_s16_eq(0,out[i*2+1]);
+    }
+    zexpect_s32_eq(0,Psyz_CdPullSamples(out,128));
+    u_char result[8];CdControlB(CdlGetlocL,NULL,result);
+    memcpy(&loc,result,sizeof(loc));
+    zexpect_s32_eq(sectors-1,CdPosToInt(&loc));
+    /* Switching 1x -> 2x with pending silence must not underflow its debt
+     * and leave the stream emitting silence forever. */
+    CdControlB(CdlStop,NULL,NULL);
+    mode=CdlModeRT|CdlModeSF;CdControlB(CdlSetmode,&mode,NULL);
+    CdIntToPos(0,&loc);CdControlB(CdlSetloc,(u_char*)&loc,NULL);
+    xa_callback_reads=0;CdControlB(CdlReadN,NULL,NULL);
+    zexpect_s32_eq(8*2352+100,Psyz_CdPullSamples(out,8*2352+100));
+    mode|=CdlModeSpeed;CdControlB(CdlSetmode,&mode,NULL);
+    count=Psyz_CdPullSamples(out,frames);
+    zexpect_s32_eq(1,count>0 && count<frames);
+    zexpect_s32_eq(sectors,xa_callback_reads);
+    zexpect_s32_eq(0,Psyz_CdPullSamples(out,128));
+    CdControlB(CdlStop,NULL,NULL);Psyz_CdSetReadCB(NULL);
 }
 
 ZTEST(libcd_playback, xa_playback) {
