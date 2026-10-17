@@ -168,6 +168,8 @@ static bool IsTopLeft(const SwVertex* a, const SwVertex* b) {
 static void RasterTriangle(
     SwVertex a, SwVertex b, SwVertex c, bool textured, bool raw_texture,
     bool semi, bool gouraud, u16 tpage, u16 clut, bool centered) {
+    SwVertex anchor =
+        b.x <= a.x ? (c.x <= b.x ? c : b) : (c.x < a.x ? c : a);
     int64_t area =
         (int64_t)(b.x - a.x) * (c.y - a.y) - (int64_t)(b.y - a.y) * (c.x - a.x);
     if (!area) {
@@ -178,6 +180,24 @@ static void RasterTriangle(
         b = c;
         c = swap;
         area = -area;
+    }
+    /* PS1 polygon attributes start half a unit above the leftmost vertex
+     * and use gradients truncated to 12 fractional bits. Exact barycentric
+     * division loses both the sample bias and the accumulated precision.
+     * Choose the anchor before winding normalization: tied X coordinates
+     * retain the GPU's original vertex priority. */
+    const int av[5] = {a.r, a.g, a.b, a.u, a.v};
+    const int bv[5] = {b.r, b.g, b.b, b.u, b.v};
+    const int cv[5] = {c.r, c.g, c.b, c.u, c.v};
+    const int origin[5] = {anchor.r, anchor.g, anchor.b, anchor.u, anchor.v};
+    int64_t step_x[5] = {0}, step_y[5] = {0};
+    if (!centered) {
+        for (int i = 0; i < 5; i++) {
+            step_x[i] = (((int64_t)bv[i] - av[i]) * (c.y - a.y) -
+                         ((int64_t)cv[i] - av[i]) * (b.y - a.y)) * 4096 / area;
+            step_y[i] = (((int64_t)cv[i] - av[i]) * (b.x - a.x) -
+                         ((int64_t)bv[i] - av[i]) * (c.x - a.x)) * 4096 / area;
+        }
     }
     int min_x = CLAMP(Min3(a.x, b.x, c.x), draw_area_start.x, draw_area_end.x);
     int max_x = CLAMP(Max3(a.x, b.x, c.x), draw_area_start.x, draw_area_end.x);
@@ -202,20 +222,31 @@ static void RasterTriangle(
             wb = -wb;
             wc = -wc;
             int denom = (int)(area * 2);
+            int attributes[5] = {0};
+            if (!centered) {
+                for (int i = 0; i < 5; i++) {
+                    u32 value = (u32)(origin[i] * 4096 + 2048) +
+                                (u32)((x - anchor.x) * step_x[i] +
+                                      (y - anchor.y) * step_y[i]);
+                    attributes[i] = (value >> 12) & 255;
+                }
+            }
             int r =
-                gouraud ? (int)((wa * a.r + wb * b.r + wc * c.r) / denom) : a.r;
+                gouraud ? (centered ? (int)((wa * a.r + wb * b.r + wc * c.r) / denom)
+                                    : attributes[0]) : a.r;
             int g =
-                gouraud ? (int)((wa * a.g + wb * b.g + wc * c.g) / denom) : a.g;
+                gouraud ? (centered ? (int)((wa * a.g + wb * b.g + wc * c.g) / denom)
+                                    : attributes[1]) : a.g;
             int blue =
-                gouraud ? (int)((wa * a.b + wb * b.b + wc * c.b) / denom) : a.b;
+                gouraud ? (centered ? (int)((wa * a.b + wb * b.b + wc * c.b) / denom)
+                                    : attributes[2]) : a.b;
             u16 color;
             bool blend = semi;
             if (textured) {
-                int64_t ta = -Edge(&b, &c, x * 2 + centered, y * 2 + centered);
-                int64_t tb = -Edge(&c, &a, x * 2 + centered, y * 2 + centered);
-                int64_t tc = -Edge(&a, &b, x * 2 + centered, y * 2 + centered);
-                int u = (int)((ta * a.u + tb * b.u + tc * c.u) / denom);
-                int v = (int)((ta * a.v + tb * b.v + tc * c.v) / denom);
+                int u = centered ? (int)((wa * a.u + wb * b.u + wc * c.u) / denom)
+                                 : attributes[3];
+                int v = centered ? (int)((wa * a.v + wb * b.v + wc * c.v) / denom)
+                                 : attributes[4];
                 u16 texel = SampleTexture(u, v, tpage, clut);
                 if (texel == 0) {
                     continue;

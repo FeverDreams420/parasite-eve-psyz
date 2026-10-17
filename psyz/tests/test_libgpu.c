@@ -182,6 +182,13 @@ ZTEST(gpu, rotated_triangle_samples_signed_affine_uv) {
     RECT texture={512,0,16,16};LoadImage(&texture,(u_long *)texels);DrawSync(0);
     const u8 uv[][6]={{13,2,2,13,12,12},{2,13,13,2,12,12},
                      {2,12,12,2,13,13},{13,12,12,13,2,2}};
+    /* Independent GPU readback, including the half-unit polygon bias. */
+    static const u16 expected[4][5] = {
+        {0x0cec, 0x0ceb, 0x0d0a, 0x0d0c, 0x0d49},
+        {0x0d87, 0x0d67, 0x0d48, 0x0d88, 0x0d2a},
+        {0x0d67, 0x0d67, 0x0d48, 0x0d88, 0x0d2a},
+        {0x0d6b, 0x0d6c, 0x0d8c, 0x0d4a, 0x0d6b},
+    };
     const short samples[][2]={{23,24},{24,23},{28,22},{22,28},{30,25}};
     for(unsigned mode=0;mode<4;++mode){
         POLY_FT3 triangle;SetPolyFT3(&triangle);setShadeTex(&triangle,1);
@@ -191,13 +198,8 @@ ZTEST(gpu, rotated_triangle_samples_signed_affine_uv) {
         DrawPrim(&triangle);DrawSync(0);
         for(unsigned sample=0;sample<5;++sample){
             int x=samples[sample][0],y=samples[sample][1];
-            int a=(48-x)*(48-y)-(20-y)*(20-x);
-            int b=(20-x)*(16-y)-(48-y)*(16-x);
-            int c=1008-a-b;
-            int u=(a*uv[mode][0]+b*uv[mode][2]+c*uv[mode][4])/1008;
-            int v=(a*uv[mode][1]+b*uv[mode][3]+c*uv[mode][5])/1008;
             u16 pixel;RECT point={x,y,1,1};StoreImage(&point,(u_long *)&pixel);DrawSync(0);
-            zassert_u16_eq(texels[v*16+u],pixel&0x7fff);
+            zassert_u16_eq(expected[mode][sample],pixel&0x7fff);
         }
     }
 }
@@ -254,7 +256,11 @@ ZTEST(gpu, merged_native_commands_sprite_direct_ot_and_copies) {
             LoadImage(&palette_rect,(u_long*)palette);LoadImage(&texture_rect,(u_long*)&texture);DrawSync(0);
             void* head = path & 1 ? (void*)&copy : (void*)&packet;
             if (path < 2) DrawPrim(head);
-            else { OT_TYPE ot[2];ClearOTagR(ot,2);addPrim(ot+1,head);DrawOTag(ot+1);DrawSync(0); }
+            else {
+                /* P_TAG also includes the first payload word. Keep that word
+                 * addressable when addPrim accesses the final native OT tag. */
+                OT_TYPE ot[3];ClearOTagR(ot,2);addPrim(ot+1,head);DrawOTag(ot+1);DrawSync(0);
+            }
             u16 result[4] = {0};DrawSync(0);StoreImage(&result_rect,(u_long*)result);DrawSync(0);
             for (int i = 0; i < 4; ++i) zexpect_u32_eq(0xC210,result[i]);
         }
@@ -1804,4 +1810,99 @@ ZTEST(gpu, vsync_callbacks_run_in_channel_order) {
     zexpect_s32_eq(0, vsync_order[0]);
     zexpect_s32_eq(3, vsync_order[1]);
     zexpect_s32_eq(7, vsync_order[2]);
+}
+
+/* Golden 16-bit GPU output from an isolated PS1 software reference. The
+ * command producer advances GPU command ticks between writes; no game code
+ * or CPU instruction is substituted. Covers UV/RGB sampling, signed 12-bit
+ * gradients, leftmost-vertex ties, winding, dithering, raw/modulated textures
+ * and subtractive transparency. */
+ZTEST(gpu, ps1_polygon_attribute_gradients) {
+    static const u32 expected[144] = {
+        0x67e412fau, 0x67e412fau, 0x67e412fau, 0x67e412fau, 0x67e412fau, 0x67e412fau,
+        0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu,
+        0xa131236bu, 0xa131236bu, 0xa131236bu, 0xa131236bu, 0xa131236bu, 0xa131236bu,
+        0x79ca2affu, 0x79ca2affu, 0x79ca2affu, 0x79ca2affu, 0x79ca2affu, 0x79ca2affu,
+        0xdb6f37ecu, 0xdb6f37ecu, 0xdb6f37ecu, 0xdb6f37ecu, 0xdb6f37ecu, 0xdb6f37ecu,
+        0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u,
+        0x0d2abcf8u, 0x0d2abcf8u, 0x0d2abcf8u, 0x0d2abcf8u, 0x0d2abcf8u, 0x0d2abcf8u,
+        0xfd037c01u, 0xfd037c01u, 0xfd037c01u, 0xfd037c01u, 0xfd037c01u, 0xfd037c01u,
+        0xf1fc5688u, 0xcf487513u, 0xcf487513u, 0xf1fc5688u, 0xf1fc5688u, 0xcf487513u,
+        0x80476901u, 0x5ed641bau, 0x5ed641bau, 0x80476901u, 0x80476901u, 0x5ed641bau,
+        0xe35417e0u, 0x6544e4b8u, 0x6544e4b8u, 0xe35417e0u, 0xe35417e0u, 0x6544e4b8u,
+        0x64ebb6ffu, 0x7f8974dcu, 0x7f8974dcu, 0x64ebb6ffu, 0x64ebb6ffu, 0x7f8974dcu,
+        0x63191668u, 0x63191668u, 0x63191668u, 0x63191668u, 0x63191668u, 0x63191668u,
+        0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu, 0x79cb5bdeu,
+        0x53a12a50u, 0x53a12a50u, 0x53a12a50u, 0x53a12a50u, 0x53a12a50u, 0x53a12a50u,
+        0x79ca2affu, 0x79ca2affu, 0x79ca2affu, 0x79ca2affu, 0x79ca2affu, 0x79ca2affu,
+        0x75424c70u, 0x75424c70u, 0x75424c70u, 0x75424c70u, 0x75424c70u, 0x75424c70u,
+        0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u, 0x9c4010a5u,
+        0xa9b7bcfbu, 0xa9b7bcfbu, 0xa9b7bcfbu, 0xa9b7bcfbu, 0xa9b7bcfbu, 0xa9b7bcfbu,
+        0xadd02e53u, 0xadd02e53u, 0xadd02e53u, 0xadd02e53u, 0xadd02e53u, 0xadd02e53u,
+        0x57665d54u, 0x8a43137bu, 0x8a43137bu, 0x57665d54u, 0x57665d54u, 0x8a43137bu,
+        0x80476901u, 0x5ed641bau, 0x5ed641bau, 0x80476901u, 0x80476901u, 0x5ed641bau,
+        0x2dccb2b4u, 0x50cb89b7u, 0x50cb89b7u, 0x2dccb2b4u, 0x2dccb2b4u, 0x50cb89b7u,
+        0xf6cec02bu, 0xc84b9688u, 0xc84b9688u, 0xf6cec02bu, 0xf6cec02bu, 0xc84b9688u,
+    };
+    typedef struct { short x,y; u_char u,v,r,g,b; } AttributeVertex;
+    static const AttributeVertex shapes[3][3] = {
+        {{5,2,86,19,58,58,58},{5,5,51,21,122,122,122},{3,4,55,16,107,107,107}},
+        {{2,3,5,2,17,220,75},{54,11,47,17,221,23,184},{13,42,83,49,119,90,240}},
+        {{3,2,70,10,22,188,53},{3,40,18,24,201,40,225},{52,15,110,42,101,167,91}}
+    };
+    static const unsigned order[6][3] = {
+        {0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}
+    };
+    _Alignas(8) u16 texture[64*64],palette[16],pixels[64*48];
+    gpu_setup();
+    Psyz_VideoSetDitheringMode(PSYZ_DITHER_AUTO);
+    for(unsigned y=0;y<64;y++)for(unsigned x=0;x<64;x++) {
+        u16 packed=0;
+        for(unsigned k=0;k<4;k++) {
+            unsigned u=x*4+k;
+            packed|=((u*3+y*5+(u>>2))&15)<<(k*4);
+        }
+        texture[y*64+x]=packed;
+    }
+    for(unsigned i=0;i<16;i++)
+        palette[i]=(i+1)|(((i*5+3)&31)<<5)|(((i*9+7)&31)<<10)|0x8000;
+    RECT texture_rect={960,448,64,64},palette_rect={0,480,16,1};
+    LoadImage(&texture_rect,(u_long *)texture);
+    LoadImage(&palette_rect,(u_long *)palette);
+    DrawSync(0);
+    unsigned test=0;
+    for(unsigned dither=0;dither<2;dither++)for(unsigned shape=0;shape<3;shape++)
+    for(unsigned kind=0;kind<4;kind++)for(unsigned permutation=0;permutation<6;permutation++,test++) {
+        int x=(test%16)*64,y=(test/16)*48;
+        u16 tpage=31|(kind==3?64:0);
+        AttributeVertex a=shapes[shape][order[permutation][0]];
+        AttributeVertex b=shapes[shape][order[permutation][1]];
+        AttributeVertex c=shapes[shape][order[permutation][2]];
+        DRAWENV env;
+        SetDefDrawEnv(&env,x,y,64,48);
+        env.dtd=dither;env.dfe=1;env.tpage=tpage;env.isbg=1;
+        env.r0=40;env.g0=48;env.b0=56;
+        PutDrawEnv(&env);
+        if(kind>=2) {
+            POLY_GT3 polygon={0};setPolyGT3(&polygon);setSemiTrans(&polygon,kind==3);
+            setXY3(&polygon,a.x,a.y,b.x,b.y,c.x,c.y);
+            setUV3(&polygon,a.u,a.v+192,b.u,b.v+192,c.u,c.v+192);
+            setRGB0(&polygon,a.r,a.g,a.b);setRGB1(&polygon,b.r,b.g,b.b);setRGB2(&polygon,c.r,c.g,c.b);
+            polygon.clut=GetClut(0,480);polygon.tpage=tpage;DrawPrim(&polygon);DrawSync(0);
+        } else {
+            POLY_FT3 polygon={0};setPolyFT3(&polygon);setShadeTex(&polygon,kind==1);
+            setXY3(&polygon,a.x,a.y,b.x,b.y,c.x,c.y);
+            setUV3(&polygon,a.u,a.v+192,b.u,b.v+192,c.u,c.v+192);
+            setRGB0(&polygon,127,113,85);
+            polygon.clut=GetClut(0,480);polygon.tpage=tpage;DrawPrim(&polygon);DrawSync(0);
+        }
+        RECT sample={x,y,64,48};StoreImage(&sample,(u_long *)pixels);DrawSync(0);
+        u32 hash=2166136261u;
+        for(unsigned i=0;i<64*48;i++) {
+            hash=(hash^(pixels[i]&255))*16777619u;
+            hash=(hash^(pixels[i]>>8))*16777619u;
+        }
+        zexpect_u32_eq(expected[test],hash);
+    }
+    zexpect_u32_eq(144,test);
 }
