@@ -223,6 +223,26 @@ ZTEST(gte, scale_matrix_negative) {
     zexpect_s16_eq(0x1000, m.m[2][2]);
 }
 
+ZTEST(gte, scale_matrix_packed_last_word) {
+    MATRIX m;
+    memset(&m, 0xa5, sizeof(m));
+    m.m[2][2] = 0x1000;
+    VECTOR s = {0x1000, 0x1000, 0x190};
+    ScaleMatrix(&m, &s);
+    int word;
+    memcpy(&word, (unsigned char*)&m + 16, sizeof(word));
+    zexpect_s32_eq(0x190, word);
+    m.m[2][2] = -0x1000;
+    ScaleMatrix(&m, &s);
+    memcpy(&word, (unsigned char*)&m + 16, sizeof(word));
+    zexpect_s32_eq(-0x190, word);
+    m.m[2][2] = 0x7fff;
+    s.vz = 0x7fffffff;
+    ScaleMatrix(&m, &s);
+    memcpy(&word, (unsigned char*)&m + 16, sizeof(word));
+    zexpect_s32_eq(0x7fff8, word);
+}
+
 ZTEST(gte, mul_matrix_identity) {
     MATRIX a = {{{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}}, {0, 0, 0}};
     MATRIX b = {{{0x0100, 0x0200, 0x0300},

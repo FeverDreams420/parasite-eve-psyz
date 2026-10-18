@@ -1539,13 +1539,21 @@ MATRIX* TransMatrix(MATRIX* m, VECTOR* v) {
 }
 
 MATRIX* ScaleMatrix(MATRIX* m, VECTOR* v) {
-    int sx = v->vx, sy = v->vy, sz = v->vz;
-    int i;
-    for (i = 0; i < 3; i++) {
-        m->m[i][0] = (short)(((int)m->m[i][0] * sx) >> 12);
-        m->m[i][1] = (short)(((int)m->m[i][1] * sy) >> 12);
-        m->m[i][2] = (short)(((int)m->m[i][2] * sz) >> 12);
+    int scales[3] = {v->vx, v->vy, v->vz};
+    int last = 0;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            /* PSY-Q shifts the low word of MULTU, including overflow. */
+            unsigned int bits = (unsigned int)(int)m->m[i][j] *
+                                (unsigned int)scales[j];
+            int product;
+            memcpy(&product, &bits, sizeof(product));
+            last = product >> 12;
+            m->m[i][j] = (short)last;
+        }
     }
+    /* Its final SW replaces the alignment halfword as well as r33. */
+    memcpy((unsigned char*)m + 16, &last, sizeof(last));
     return m;
 }
 
