@@ -480,6 +480,9 @@ static void WaitForNextFrame(void) {
     last_frame_time = frame_end_time;
 }
 
+/* Implemented by the existing SDL audio backend; no device in video-clock mode. */
+void Sdl3Audio_VBlank(bool pal);
+
 int Psyz_VideoVSync(int mode) {
     Uint32 now_us;
     unsigned short ret;
@@ -498,6 +501,7 @@ int Psyz_VideoVSync(int mode) {
         PlatformBackend_Present();
         PollEvents();
         WaitForNextFrame();
+        Sdl3Audio_VBlank(is_pal);
         last_vsync_us = (Uint32)(SDL_GetTicksNS() / 1000);
     }
     return ret;

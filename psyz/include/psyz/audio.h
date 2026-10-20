@@ -14,6 +14,9 @@ extern "C" {
  * @brief Initialize the audio subsystem
  *
  * Opens the host audio device and the SPU mixer. Idempotent.
+ * With PSYZ_AUDIO_CLOCK=video, opens no device and advances the mixer once
+ * per blocking SDL video VSync instead (NTSC 60000/1001 Hz or PAL 50 Hz).
+ * Pause also suspends this offline clock; direct sample pulls remain available.
  *
  * @return 0 on success, -1 on failure
  */
