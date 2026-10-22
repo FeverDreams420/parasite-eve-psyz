@@ -12,6 +12,13 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 typedef volatile long AtomicWord;
+typedef volatile __int64 AtomicTime;
+static inline uint64_t AtomicTimeLoad(AtomicTime* p) {
+    return (uint64_t)_InterlockedCompareExchange64(p, 0, 0);
+}
+static inline void AtomicTimeStore(AtomicTime* p, uint64_t v) {
+    _InterlockedExchange64(p, (__int64)v);
+}
 static inline long AtomicLoad(AtomicWord* p) { return _InterlockedOr(p, 0); }
 static inline void AtomicStore(AtomicWord* p, long v) {
     _InterlockedExchange(p, v);
@@ -24,6 +31,13 @@ static inline void AtomicAdd(AtomicWord* p, long v) {
 }
 #else
 typedef long AtomicWord;
+typedef uint64_t AtomicTime;
+static inline uint64_t AtomicTimeLoad(AtomicTime* p) {
+    return __atomic_load_n(p, __ATOMIC_SEQ_CST);
+}
+static inline void AtomicTimeStore(AtomicTime* p, uint64_t v) {
+    __atomic_store_n(p, v, __ATOMIC_SEQ_CST);
+}
 static inline long AtomicLoad(AtomicWord* p) {
     return __atomic_load_n(p, __ATOMIC_SEQ_CST);
 }
@@ -74,8 +88,8 @@ typedef struct {
 } Event;
 
 typedef struct {
-    uint32_t last_us;   // when the count last restarted from 0
-    uint32_t next_us;   // when the count reaches the target
+    uint64_t last_us;   // when the count last restarted from 0
+    uint64_t next_us;   // when the count reaches the target
     uint32_t period_us; // 0 until SetRCnt
     uint32_t period_frac;
     uint32_t frac_acc;
@@ -109,7 +123,7 @@ static unsigned irq_saved_mask;
 static int callbacks_running = 1;
 static long rcnt_auto_ack[4] = {1, 1, 1, 1};
 static RootCounter counters[3];
-static AtomicWord poll_deadline_us;
+static AtomicTime poll_deadline_us;
 
 static PendingEvent pending[32];
 static int pending_len;
@@ -441,8 +455,8 @@ static unsigned CounterClock(int i, long mode) {
     }
 }
 
-static int IsDue(uint32_t deadline_us, uint32_t now_us) {
-    return (int32_t)(now_us - deadline_us) >= 0;
+static int IsDue(uint64_t deadline_us, uint64_t now_us) {
+    return now_us >= deadline_us;
 }
 
 static void CounterStep(RootCounter* c) {
@@ -455,7 +469,7 @@ static void CounterStep(RootCounter* c) {
     }
 }
 
-static void CounterRestart(RootCounter* c, uint32_t now_us) {
+static void CounterRestart(RootCounter* c, uint64_t now_us) {
     c->last_us = now_us;
     c->next_us = now_us + c->period_us;
     c->frac_acc = 0;
@@ -463,10 +477,10 @@ static void CounterRestart(RootCounter* c, uint32_t now_us) {
 
 // Fires every timer interrupt that came due. Returns 0 when no timer is
 // triggered, otherwise 1 with the earliest deadline in *deadline_us.
-static int ServiceTimers(uint32_t* deadline_us) {
+static int ServiceTimers(uint64_t* deadline_us) {
     int triggered = 0;
     KernelLock();
-    uint32_t now = Psyz_OsNowUs();
+    uint64_t now = Psyz_OsNowUs();
     in_interrupt = 1;
     for (int i = 0; i < LEN(counters); i++) {
         RootCounter* c = &counters[i];
@@ -474,7 +488,7 @@ static int ServiceTimers(uint32_t* deadline_us) {
         if (!c->period_us || !c->irq) {
             continue;
         }
-        if ((int32_t)(now - c->next_us) > MAX_CATCHUP_US) {
+        if (now > c->next_us && now - c->next_us > MAX_CATCHUP_US) {
             CounterRestart(c, now);
         }
         while (IsDue(c->next_us, now)) {
@@ -485,14 +499,14 @@ static int ServiceTimers(uint32_t* deadline_us) {
                 irq_latched |= bit;
             }
         }
-        if (!triggered || (int32_t)(c->next_us - *deadline_us) < 0) {
+        if (!triggered || c->next_us < *deadline_us) {
             *deadline_us = c->next_us;
             triggered = 1;
         }
     }
     in_interrupt = 0;
-    AtomicStore(
-        &poll_deadline_us, (long)(triggered ? *deadline_us : now + INT32_MAX));
+    AtomicTimeStore(
+        &poll_deadline_us, triggered ? *deadline_us : now + INT32_MAX);
     ServicePending();
     KernelUnlock();
     return triggered;
@@ -500,14 +514,16 @@ static int ServiceTimers(uint32_t* deadline_us) {
 
 static void IrqThread(void) {
     for (;;) {
-        uint32_t deadline;
+        uint64_t deadline;
         if (!ServiceTimers(&deadline)) {
             Psyz_OsBellWait(bell_irq, PSYZ_OS_FOREVER);
             continue;
         }
-        int32_t left = (int32_t)(deadline - Psyz_OsNowUs());
-        if (left > 0) {
-            Psyz_OsBellWait(bell_irq, (uint32_t)left);
+        uint64_t now = Psyz_OsNowUs();
+        if (deadline > now) {
+            uint64_t left = deadline - now;
+            Psyz_OsBellWait(bell_irq,
+                (uint32_t)(left < INT32_MAX ? left : INT32_MAX));
         }
     }
 }
@@ -521,9 +537,9 @@ static void StartIrqThread(void) {
 }
 
 void Psyz_KernelPoll(void) {
-    uint32_t deadline;
+    uint64_t deadline;
     if (!irq_thread_state || OwnsKernel() ||
-        !IsDue((uint32_t)AtomicLoad(&poll_deadline_us), Psyz_OsNowUs())) {
+        !IsDue(AtomicTimeLoad(&poll_deadline_us), Psyz_OsNowUs())) {
         return;
     }
     ServiceTimers(&deadline);
@@ -552,7 +568,7 @@ long SetRCnt(long spec, unsigned short target, long mode) {
     c->ticks_per_us_q15 = clock / 15625 * 512 + clock % 15625 * 512 / 15625;
     c->irq = (mode & RCntMdINTR) != 0;
     CounterRestart(c, Psyz_OsNowUs());
-    AtomicStore(&poll_deadline_us, (long)c->last_us);
+    AtomicTimeStore(&poll_deadline_us, c->last_us);
     KernelUnlock();
     Psyz_OsBellRing(bell_irq);
     return 1;
@@ -582,7 +598,7 @@ long ResetRCnt(long spec) {
     }
     KernelLock();
     CounterRestart(&counters[i], Psyz_OsNowUs());
-    AtomicStore(&poll_deadline_us, (long)counters[i].last_us);
+    AtomicTimeStore(&poll_deadline_us, counters[i].last_us);
     KernelUnlock();
     Psyz_OsBellRing(bell_irq);
     return 1;

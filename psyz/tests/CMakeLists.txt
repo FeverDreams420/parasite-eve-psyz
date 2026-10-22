@@ -30,6 +30,13 @@ if(PLATFORM_PSP)
         OUTPUT_NAME psyz_tests_psp)
 else()
     enable_testing()
+    # Standalone fake host clock: exercise long idle deadlines without sleeping.
+    add_executable(psyz_clock_tests test_events.c)
+    target_compile_definitions(psyz_clock_tests PRIVATE PSYZ_TEST_CLOCK=1)
+    target_include_directories(psyz_clock_tests PRIVATE ../include)
+    set_target_properties(psyz_clock_tests PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    add_test(NAME psyz_clock_tests COMMAND psyz_clock_tests)
     add_test(NAME psyz_tests COMMAND ${PROJECT_NAME}
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

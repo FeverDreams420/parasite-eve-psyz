@@ -1,3 +1,88 @@
+#ifdef PSYZ_TEST_CLOCK
+#include <stdio.h>
+#include <stdint.h>
+#define rename psx_rename
+#include "../src/psyz/kernel.c"
+#undef rename
+
+static uint64_t clock_us;
+uint64_t Psyz_OsNowUs(void) { return clock_us; }
+uintptr_t Psyz_OsThreadSelf(void) { return 1; }
+void* Psyz_OsLockCreate(void) { return (void *)1; }
+void Psyz_OsLock(void* p) { (void)p; }
+void Psyz_OsUnlock(void* p) { (void)p; }
+void* Psyz_OsBellCreate(void) { return (void *)1; }
+void Psyz_OsBellRing(void* p) { (void)p; }
+void Psyz_OsBellWait(void* p, uint32_t timeout) {
+    (void)p;
+    (void)timeout;
+}
+int Psyz_OsThreadStart(void (*fn)(void), const char* name) {
+    (void)fn;
+    (void)name;
+    return -1;
+}
+void psyz_log(unsigned level, const char* file, unsigned line,
+              const char* func, const char* fmt, ...) {
+    (void)level;
+    (void)file;
+    (void)line;
+    (void)func;
+    (void)fmt;
+}
+long GetVideoMode(void) { return 0; }
+static unsigned calls;
+static long tick(void) {
+    calls++;
+    return 0;
+}
+
+/* Standalone deterministic host-clock test. No real sleeps or game-memory
+ * writes: build test_events.c with -DPSYZ_TEST_CLOCK and the PsyZ include path.
+ * The normal ztest build below still tests actual interrupt-thread delivery. */
+int main(void) {
+    static const uint64_t starts[] = {1000, UINT64_C(0x7ffff000),
+        UINT64_C(0xfffff000), UINT64_C(0x100000000),
+        UINT64_C(86400)*1000000};
+    static const uint64_t stalls[] = {UINT64_C(40)*60*1000000,
+        UINT64_C(72)*60*1000000, UINT64_C(6)*60*60*1000000,
+        UINT64_C(30)*86400*1000000};
+    unsigned tested = 0;
+    for (unsigned i = 0; i < sizeof(starts) / sizeof(starts[0]); ++i) {
+        for (unsigned j = 0; j < sizeof(stalls) / sizeof(stalls[0]); ++j) {
+            clock_us = starts[i];
+            calls = 0;
+            long event = OpenEvent(RCntCNT2, EvSpINT, EvMdINTR, tick);
+            if (event < 0 || !EnableEvent(event)) return 1;
+            SetRCnt(RCntCNT2, 17640, RCntMdINTR);
+            StartRCnt(RCntCNT2);
+            clock_us += 4165;
+            Psyz_KernelPoll();
+            if (calls != 0) return 2;
+            clock_us += 2;
+            Psyz_KernelPoll();
+            if (calls != 1) return 3;
+            clock_us += stalls[j];
+            Psyz_KernelPoll();
+            /* Long pauses discard catch-up debt, preserving the existing
+             * MAX_CATCHUP_US policy instead of emitting millions of ticks. */
+            if (calls != 1) return 4;
+            clock_us += 4165;
+            Psyz_KernelPoll();
+            if (calls != 1) return 5;
+            clock_us += 2;
+            Psyz_KernelPoll();
+            if (calls != 2) return 6;
+            StopRCnt(RCntCNT2);
+            CloseEvent(event);
+            ++tested;
+        }
+    }
+    printf("host-clock cases=%u passed; ordinary periods, long-pause restart, no catch-up storm\n",tested);
+    return 0;
+}
+
+#else
 #include <string.h>
 #include "ztest.h"
 #include <psyz.h>
@@ -1013,3 +1098,5 @@ ZTEST(events, disabled_card_event_misses_card_info_result) {
     }
     zexpect_s32_eq(-1, card_poll(card_sw, 10));
 }
+
+#endif /* PSYZ_TEST_CLOCK */

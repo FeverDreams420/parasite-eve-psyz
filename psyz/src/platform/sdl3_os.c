@@ -2,7 +2,7 @@
 #include <psyz/log.h>
 #include "../psyz/os.h"
 
-uint32_t Psyz_OsNowUs(void) { return (uint32_t)SDL_NS_TO_US(SDL_GetTicksNS()); }
+uint64_t Psyz_OsNowUs(void) { return SDL_NS_TO_US(SDL_GetTicksNS()); }
 
 uintptr_t Psyz_OsThreadSelf(void) {
     return (uintptr_t)SDL_GetCurrentThreadID();

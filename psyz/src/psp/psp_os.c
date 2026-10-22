@@ -6,7 +6,7 @@
 // Above the game's main thread (0x20) and below the audio thread (0x12).
 #define IRQ_THREAD_PRIORITY 0x18
 
-uint32_t Psyz_OsNowUs(void) { return sceKernelGetSystemTimeLow(); }
+uint64_t Psyz_OsNowUs(void) { return sceKernelGetSystemTimeWide(); }
 
 uintptr_t Psyz_OsThreadSelf(void) { return (uintptr_t)sceKernelGetThreadId(); }
 

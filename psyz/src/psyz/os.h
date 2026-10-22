@@ -6,9 +6,8 @@
 
 #define PSYZ_OS_FOREVER UINT32_MAX
 
-// Monotonic clock in microseconds. It wraps every ~71 minutes, so compare
-// two readings through their signed difference.
-uint32_t Psyz_OsNowUs(void);
+// Monotonic host clock in microseconds, including long pauses between polls.
+uint64_t Psyz_OsNowUs(void);
 
 // Identifier of the calling thread, never 0.
 uintptr_t Psyz_OsThreadSelf(void);
