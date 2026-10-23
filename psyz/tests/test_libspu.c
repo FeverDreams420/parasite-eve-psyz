@@ -1425,6 +1425,112 @@ static void capture_test_voice(void) {
 }
 #endif
 
+#if defined(__psyz) && !defined(__PSP__)
+typedef struct {
+    unsigned operation;
+    SDL_Semaphore* entered;
+    SDL_AtomicInt done;
+} SpuConcurrentAccess;
+
+static int SDLCALL access_spu_from_worker(void* userdata) {
+    SpuConcurrentAccess* access=userdata;
+    unsigned char data[8]={1,2,3,4,5,6,7,8};
+    short pcm[2];
+    SDL_SignalSemaphore(access->entered);
+    switch(access->operation) {
+    case 0: Psyz_SpuInit();break;
+    case 1: Psyz_SpuReset(0);break;
+    case 2: Psyz_SpuReset(1);break;
+    case 3: Psyz_SpuSetTransferAddr(0x1000);break;
+    case 4: (void)Psyz_SpuGetTransferAddr();break;
+    case 5: Psyz_SpuFifoWrite(0x1234);break;
+    case 6: Psyz_SpuFifoWriteBulk(data,sizeof(data));break;
+    case 7: Psyz_SpuMemWrite(0x200,data,sizeof(data));break;
+    case 8: Psyz_SpuMemRead(0x200,data,sizeof(data));break;
+    case 9: Psyz_SpuWrite(0x188,1);break;
+    case 10: (void)Psyz_SpuRead(0x1AA);break;
+    case 11: Psyz_SpuPullSamples(pcm,1);break;
+    }
+    SDL_SetAtomicInt(&access->done,1);
+    return 0;
+}
+
+static void count_concurrent_pcm(const short* samples,int frames,void* userdata) {
+    (void)samples;
+    SDL_AddAtomicInt((SDL_AtomicInt*)userdata,frames);
+}
+#endif
+
+ZTEST(audio_sync, public_spu_access_waits_for_mixer_transaction) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=SDL_getenv("PSYZ_AUDIO_CLOCK");
+    char* saved=clock?SDL_strdup(clock):NULL;
+    Psyz_AudioDestroy();SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK","video",true);
+    zassert_s32_eq(0,Psyz_AudioInit());
+    unsigned early=0,completed=0,started=0;
+    for(unsigned operation=0;operation<12;++operation) {
+        SpuConcurrentAccess access={.operation=operation};
+        access.entered=SDL_CreateSemaphore(0);
+        if(!access.entered)continue;
+        SDL_PropertiesID props=SDL_CreateProperties();
+        SDL_SetPointerProperty(props,SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER,(void*)access_spu_from_worker);
+        SDL_SetStringProperty(props,SDL_PROP_THREAD_CREATE_NAME_STRING,"SPU transaction probe");
+        SDL_SetPointerProperty(props,SDL_PROP_THREAD_CREATE_USERDATA_POINTER,&access);
+        /* Hot reset preserves 512 KiB on its caller's stack. */
+        SDL_SetNumberProperty(props,SDL_PROP_THREAD_CREATE_STACKSIZE_NUMBER,2*1024*1024);
+        Psyz_AudioLock();
+        SDL_Thread* thread=SDL_CreateThreadWithProperties(props);SDL_DestroyProperties(props);
+        if(thread) {
+            if(SDL_WaitSemaphoreTimeout(access.entered,2000)) {
+                started|=1u<<operation;
+                SDL_Delay(20);
+                if(SDL_GetAtomicInt(&access.done))early|=1u<<operation;
+            }
+        }
+        Psyz_AudioUnlock();
+        if(thread) {
+            int status=-1;SDL_WaitThread(thread,&status);
+            if(status==0 && SDL_GetAtomicInt(&access.done))completed|=1u<<operation;
+        }
+        SDL_DestroySemaphore(access.entered);
+    }
+    Psyz_AudioDestroy();
+    if(saved){SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK",saved,true);SDL_free(saved);}
+    else SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK");
+    zassert_s32_eq(0,Psyz_AudioInit());
+    zassert_u32_eq(0xFFF,started);zassert_u32_eq(0xFFF,completed);
+    zassert_u32_eq(0,early);
+#endif
+}
+
+ZTEST(audio_sync, device_mix_survives_concurrent_rekey_reset_and_ram_transfer) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=SDL_getenv("PSYZ_AUDIO_CLOCK");
+    char* saved=clock?SDL_strdup(clock):NULL;
+    Psyz_AudioDestroy();SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK");
+    zassert_s32_eq(0,Psyz_AudioInit());
+    SDL_AtomicInt rendered={0};capture_test_voice();
+    Psyz_AudioSetCaptureCallback(count_concurrent_pcm,&rendered);
+    for(unsigned i=0;i<20000;++i) {
+        if((i&1023)==0)Psyz_SpuReset(1);
+        Psyz_SpuWrite(0x04,(unsigned short)(1+(i*97)%0x3FFF));
+        if((i&15)==0)Psyz_SpuMemWrite(kSampleAddr,kAdpcmSine,sizeof(kAdpcmSine));
+        Psyz_SpuWrite(0x188,1);
+        if((i&7)==0)Psyz_SpuWrite(0x18C,1);
+        if((i&63)==0)SDL_Delay(1);
+    }
+    for(unsigned wait=0;wait<200 && !SDL_GetAtomicInt(&rendered);++wait)SDL_Delay(5);
+    Psyz_AudioSetCaptureCallback(NULL,NULL);
+    int frames=SDL_GetAtomicInt(&rendered);
+    Psyz_AudioDestroy();
+    if(saved){SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK",saved,true);SDL_free(saved);}
+    else SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK");
+    zassert_s32_eq(0,Psyz_AudioInit());zassert_s32_eq(1,frames>0);
+#endif
+}
+
 ZTEST(audio_capture, video_clock_observes_existing_pcm_without_advancing_spu) {
     zskip_targets("ps1;psp");
 #if defined(__psyz) && !defined(__PSP__)

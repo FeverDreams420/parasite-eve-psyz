@@ -4,6 +4,13 @@
 /**
  * @file spu.h
  * @brief Platform-agnostic PS1 SPU emulation endpoints.
+ *
+ * Software-SPU state access is serialized with the active audio backend's
+ * recursive mutex. Callers may hold Psyz_AudioLock to batch register/RAM
+ * operations. AudioInit/AudioDestroy lifecycle calls must be serialized by
+ * the host. Before audio initialization, callers serialize SPU access.
+ * A pointer from Psyz_SpuGetRam remains raw storage: hold the audio lock when
+ * accessing it during playback, or use Psyz_SpuMemRead/Psyz_SpuMemWrite.
  */
 
 #include <psyz/types.h>

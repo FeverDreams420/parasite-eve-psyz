@@ -43,11 +43,13 @@ static struct {
 u8* Psyz_SpuGetRam(void) { return spu.ram; }
 
 void Psyz_SpuInit(void) {
-    if (spu.initialized)
-        return;
-    memset(&spu, 0, sizeof(spu));
-    spu.initialized = 1;
-    INFOF("SPU emulation initialized");
+    Psyz_AudioLock();
+    if (!spu.initialized) {
+        memset(&spu, 0, sizeof(spu));
+        spu.initialized = 1;
+        INFOF("SPU emulation initialized");
+    }
+    Psyz_AudioUnlock();
 }
 
 static void spu_reset(void) {
@@ -66,21 +68,31 @@ static void spu_reset_hot(void) {
 }
 
 void Psyz_SpuReset(int hot) {
+    Psyz_AudioLock();
     if (hot) {
         spu_reset_hot();
     } else {
         spu_reset();
     }
     spu.initialized = 1;
+    Psyz_AudioUnlock();
 }
 
 void Psyz_SpuSetTransferAddr(unsigned int addr) {
+    Psyz_AudioLock();
     spu.transfer_addr = addr & (PSYZ_SPU_RAM_SIZE - 1);
+    Psyz_AudioUnlock();
 }
 
-unsigned int Psyz_SpuGetTransferAddr(void) { return spu.transfer_addr; }
+unsigned int Psyz_SpuGetTransferAddr(void) {
+    Psyz_AudioLock();
+    unsigned int address = spu.transfer_addr;
+    Psyz_AudioUnlock();
+    return address;
+}
 
 void Psyz_SpuFifoWrite(unsigned short word) {
+    Psyz_AudioLock();
 #ifdef PLATFORM_LE
     *(unsigned short*)&spu.ram[spu.transfer_addr] = word;
 #else
@@ -88,14 +100,18 @@ void Psyz_SpuFifoWrite(unsigned short word) {
     spu.ram[spu.transfer_addr + 1] = (unsigned char)((word >> 8) & 0xFF);
 #endif
     spu.transfer_addr = (spu.transfer_addr + 2) & (PSYZ_SPU_RAM_SIZE - 1);
+    Psyz_AudioUnlock();
 }
 
 void Psyz_SpuFifoWriteBulk(const unsigned char* src, unsigned int size) {
+    Psyz_AudioLock();
     Psyz_SpuMemWrite(spu.transfer_addr, src, size);
     spu.transfer_addr = (spu.transfer_addr + size) & (PSYZ_SPU_RAM_SIZE - 1);
+    Psyz_AudioUnlock();
 }
 
 void Psyz_SpuMemRead(unsigned int offset, void* dst, unsigned int size) {
+    Psyz_AudioLock();
     unsigned int start = offset & (PSYZ_SPU_RAM_SIZE - 1);
     unsigned int head = PSYZ_SPU_RAM_SIZE - start;
     if (size <= head) {
@@ -104,9 +120,11 @@ void Psyz_SpuMemRead(unsigned int offset, void* dst, unsigned int size) {
         memcpy(dst, &spu.ram[start], head);
         memcpy((unsigned char*)dst + head, &spu.ram[0], size - head);
     }
+    Psyz_AudioUnlock();
 }
 
 void Psyz_SpuMemWrite(unsigned int offset, const void* src, unsigned int size) {
+    Psyz_AudioLock();
     unsigned int start = offset & (PSYZ_SPU_RAM_SIZE - 1);
     unsigned int head = PSYZ_SPU_RAM_SIZE - start;
     if (size <= head) {
@@ -115,6 +133,7 @@ void Psyz_SpuMemWrite(unsigned int offset, const void* src, unsigned int size) {
         memcpy(&spu.ram[start], src, head);
         memcpy(&spu.ram[0], (const unsigned char*)src + head, size - head);
     }
+    Psyz_AudioUnlock();
 }
 
 static void spu_key_on_voice(int v) {
@@ -129,6 +148,9 @@ void Psyz_SpuWrite(unsigned int reg_offset, unsigned short value) {
     if (reg_offset == offsetof(SPU_RXX, spustat)) { // read-only
         return;
     }
+    // Key-on changes the decoder cursor. It must not reset sample_idx while
+    // the mixer is between its block-boundary check and sample consumption.
+    Psyz_AudioLock();
     _spu_RXX->raw[reg_offset >> 1] = value;
     // MSVC's C-mode offsetof is not an integer constant expression, so it
     // cannot appear in a case label. Use an if-chain instead.
@@ -159,6 +181,7 @@ void Psyz_SpuWrite(unsigned int reg_offset, unsigned short value) {
     } else if (reg_offset == offsetof(SPU_RXX, trans_fifo)) {
         Psyz_SpuFifoWrite(value);
     }
+    Psyz_AudioUnlock();
 }
 
 unsigned short Psyz_SpuRead(unsigned int reg_offset) {
@@ -166,17 +189,21 @@ unsigned short Psyz_SpuRead(unsigned int reg_offset) {
         WARNF("Psyz_SpuRead: bad offset 0x%X", reg_offset);
         return 0;
     }
+    Psyz_AudioLock();
+    unsigned short value;
     // offsetof is not an ICE under MSVC C mode, so it cannot be a case label.
     if (reg_offset == offsetof(SPU_RXX, trans_addr)) {
-        return (unsigned short)((spu.transfer_addr >> 3) & 0xFFFF);
-    }
-    if (reg_offset == offsetof(SPU_RXX, spustat)) {
+        value = (unsigned short)((spu.transfer_addr >> 3) & 0xFFFF);
+    } else if (reg_offset == offsetof(SPU_RXX, spustat)) {
         // lower 6 bits mirror SPUCNT's low bits
         // bit 11, capture-buffer half-pointer, flipped by spu_tick.
-        return (_spu_RXX->rxx.spucnt & 0x3F) |
-               (_spu_RXX->rxx.spustat & (1u << 11));
+        value = (_spu_RXX->rxx.spucnt & 0x3F) |
+                (_spu_RXX->rxx.spustat & (1u << 11));
+    } else {
+        value = _spu_RXX->raw[reg_offset >> 1];
     }
-    return _spu_RXX->raw[reg_offset >> 1];
+    Psyz_AudioUnlock();
+    return value;
 }
 
 static void write_capture(unsigned int idx, short val) {
@@ -399,11 +426,13 @@ static void spu_tick(short* out) {
 }
 
 void Psyz_SpuPullSamples(short* out, int num_frames) {
+    Psyz_AudioLock();
     if (!spu.initialized) {
         memset(out, 0, num_frames * 2 * sizeof(short));
-        return;
+    } else {
+        for (int i = 0; i < num_frames; i++) {
+            spu_tick(&out[i * 2]);
+        }
     }
-    for (int i = 0; i < num_frames; i++) {
-        spu_tick(&out[i * 2]);
-    }
+    Psyz_AudioUnlock();
 }
