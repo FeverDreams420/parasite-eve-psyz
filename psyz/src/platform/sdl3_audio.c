@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "../internal.h"
 
 #define N_CHANNELS 2
 #define SAMPLE_SIZE sizeof(short)
@@ -146,6 +147,26 @@ int Psyz_AudioIsPaused(void) {
     return !sdl_stream || SDL_AudioStreamDevicePaused(sdl_stream);
 }
 
+static void MixOfflineFrames(unsigned frames) {
+    short samples[2*883];
+    unsigned offset=0;
+    while(offset<frames){
+        unsigned batch=Psyz_KernelAudioBatch(frames-offset);
+        Psyz_SpuPullSamples(samples+offset*2,(int)batch);
+        Psyz_KernelAdvanceAudio(batch);
+        offset+=batch;
+    }
+    if(capture_callback)capture_callback(samples,(int)frames,capture_userdata);
+}
+
+int Psyz_AudioWaitForTimer(void) {
+    if(!is_audio_init || !video_clock || video_paused)return 0;
+    SDL_LockMutex(mutex);
+    MixOfflineFrames(Psyz_KernelAudioBatch(883));
+    SDL_UnlockMutex(mutex);
+    return 1;
+}
+
 /* SDL backend clock for offline runs. Queries and wall time never consume
  * samples. Carry the NTSC fraction so 60000 blanks yield 44100*1001 frames. */
 void Sdl3Audio_VBlank(bool pal) {
@@ -156,9 +177,7 @@ void Sdl3Audio_VBlank(bool pal) {
     video_remainder += PSYZ_SPU_SAMPLE_RATE * (pal ? 1u : 1001u);
     unsigned frames = video_remainder / divisor;
     video_remainder %= divisor;
-    short samples[2 * 883];
     SDL_LockMutex(mutex);
-    Psyz_SpuPullSamples(samples, (int)frames);
-    if (capture_callback) capture_callback(samples,(int)frames,capture_userdata);
+    MixOfflineFrames(frames);
     SDL_UnlockMutex(mutex);
 }

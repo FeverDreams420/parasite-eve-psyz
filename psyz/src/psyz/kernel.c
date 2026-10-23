@@ -6,6 +6,7 @@
 #include <libapi.h>
 #include <libetc.h>
 #include <string.h>
+#include <stdlib.h>
 #include "os.h"
 #include "../internal.h"
 
@@ -135,6 +136,26 @@ static int posted_len;
 static void (*vsync_callbacks[8])(void);
 static void VSyncDispatch(void);
 static void (*irq_callbacks[IRQ_COUNT])(void) = {VSyncDispatch};
+
+/* Offline playback owns emulated time. Host scheduling must not change AKAO
+ * timer counts or positions within the mixed PCM stream. Fixed at startup. */
+static AtomicWord audio_clock=-1;
+static AtomicTime audio_time_us;
+static unsigned audio_time_fraction;
+
+static int UsesAudioClock(void) {
+    long mode=AtomicLoad(&audio_clock);
+    if(mode<0){
+        const char* clock=getenv("PSYZ_AUDIO_CLOCK");
+        AtomicCas(&audio_clock,-1,clock && !strcmp(clock,"video"));
+        mode=AtomicLoad(&audio_clock);
+    }
+    return (int)mode;
+}
+
+static uint64_t KernelNowUs(void) {
+    return UsesAudioClock()?AtomicTimeLoad(&audio_time_us):Psyz_OsNowUs();
+}
 
 static void KernelInit(void) {
     if (kernel_lock) {
@@ -480,7 +501,7 @@ static void CounterRestart(RootCounter* c, uint64_t now_us) {
 static int ServiceTimers(uint64_t* deadline_us) {
     int triggered = 0;
     KernelLock();
-    uint64_t now = Psyz_OsNowUs();
+    uint64_t now = KernelNowUs();
     in_interrupt = 1;
     for (int i = 0; i < LEN(counters); i++) {
         RootCounter* c = &counters[i];
@@ -519,7 +540,7 @@ static void IrqThread(void) {
             Psyz_OsBellWait(bell_irq, PSYZ_OS_FOREVER);
             continue;
         }
-        uint64_t now = Psyz_OsNowUs();
+        uint64_t now = KernelNowUs();
         if (deadline > now) {
             uint64_t left = deadline - now;
             Psyz_OsBellWait(bell_irq,
@@ -533,16 +554,39 @@ static void StartIrqThread(void) {
         return;
     }
     KernelInit();
+    if(UsesAudioClock()){irq_thread_state=-1;return;}
     irq_thread_state = Psyz_OsThreadStart(IrqThread, "psyz_irq") ? -1 : 1;
 }
 
 void Psyz_KernelPoll(void) {
     uint64_t deadline;
     if (!irq_thread_state || OwnsKernel() ||
-        !IsDue(AtomicTimeLoad(&poll_deadline_us), Psyz_OsNowUs())) {
+        (!UsesAudioClock() && !IsDue(AtomicTimeLoad(&poll_deadline_us), KernelNowUs()))) {
         return;
     }
     ServiceTimers(&deadline);
+}
+
+/* Keep a timer edge between sample batches, rather than moving every AKAO
+ * update to the video-frame boundary. These endpoints are private to SDL. */
+unsigned Psyz_KernelAudioBatch(unsigned maximum) {
+    if(!UsesAudioClock())return maximum;
+    Psyz_KernelPoll();
+    if(!irq_thread_state)return maximum;
+    uint64_t deadline=AtomicTimeLoad(&poll_deadline_us);
+    uint64_t now=AtomicTimeLoad(&audio_time_us);
+    if(deadline<=now)return 1;
+    uint64_t until=(deadline-now)*PSYZ_SPU_SAMPLE_RATE-audio_time_fraction;
+    uint64_t frames=(until+999999)/1000000;
+    return frames<maximum?(unsigned)(frames?frames:1):maximum;
+}
+
+void Psyz_KernelAdvanceAudio(unsigned frames) {
+    if(!UsesAudioClock())return;
+    uint64_t fraction=audio_time_fraction+(uint64_t)frames*1000000;
+    AtomicTimeStore(&audio_time_us,AtomicTimeLoad(&audio_time_us)+fraction/PSYZ_SPU_SAMPLE_RATE);
+    audio_time_fraction=(unsigned)(fraction%PSYZ_SPU_SAMPLE_RATE);
+    Psyz_KernelPoll();
 }
 
 long SetRCnt(long spec, unsigned short target, long mode) {
@@ -567,7 +611,7 @@ long SetRCnt(long spec, unsigned short target, long mode) {
     }
     c->ticks_per_us_q15 = clock / 15625 * 512 + clock % 15625 * 512 / 15625;
     c->irq = (mode & RCntMdINTR) != 0;
-    CounterRestart(c, Psyz_OsNowUs());
+    CounterRestart(c, KernelNowUs());
     AtomicTimeStore(&poll_deadline_us, c->last_us);
     KernelUnlock();
     Psyz_OsBellRing(bell_irq);
@@ -583,7 +627,7 @@ long GetRCnt(long spec) {
     RootCounter* c = &counters[i];
     long value = 0;
     if (c->period_us) {
-        uint32_t phase = (Psyz_OsNowUs() - c->last_us) % c->period_us;
+        uint32_t phase = (KernelNowUs() - c->last_us) % c->period_us;
         uint32_t ticks = phase * c->ticks_per_us_q15 >> 15;
         value = (long)(ticks < c->target ? ticks : c->target - 1);
     }
@@ -597,7 +641,7 @@ long ResetRCnt(long spec) {
         return 0;
     }
     KernelLock();
-    CounterRestart(&counters[i], Psyz_OsNowUs());
+    CounterRestart(&counters[i], KernelNowUs());
     AtomicTimeStore(&poll_deadline_us, counters[i].last_us);
     KernelUnlock();
     Psyz_OsBellRing(bell_irq);

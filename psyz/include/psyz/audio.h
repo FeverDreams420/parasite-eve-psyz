@@ -45,6 +45,16 @@ int Psyz_AudioInit(void);
 void Psyz_AudioDestroy(void);
 
 /**
+ * Advance offline playback toward the next emulated timer edge while a native
+ * synchronous I/O routine waits for its timer handler (at most 883 frames per
+ * call). Does not advance VBlank.
+ * Returns 1 when the video-clock backend generated samples, otherwise 0:
+ * real-time backends already run independently and the caller should poll/wait
+ * as usual. Paused/uninitialized audio returns 0. Do not call under audio lock.
+ */
+int Psyz_AudioWaitForTimer(void);
+
+/**
  * @brief Pause the host audio device so it stops pulling samples from the SPU
  *
  * Psyz_AudioUnpause must be called to resume.

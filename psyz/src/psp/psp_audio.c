@@ -161,3 +161,6 @@ void Psyz_AudioUnlock(void) {
 void Psyz_AudioPause(void) { is_paused = 1; }
 
 void Psyz_AudioUnpause(void) { is_paused = 0; }
+
+/* PSP playback and root counters run independently of the calling thread. */
+int Psyz_AudioWaitForTimer(void) {return 0;}

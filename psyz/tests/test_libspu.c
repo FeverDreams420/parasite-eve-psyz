@@ -1487,3 +1487,89 @@ ZTEST(audio_capture, device_callback_observes_pcm_and_detaches) {
     zassert_s32_eq(0,Psyz_AudioInit());
 #endif
 }
+
+#if defined(__psyz) && !defined(__PSP__)
+#include <kernel.h>
+#include <libapi.h>
+#include <libetc.h>
+static unsigned offline_timer_ticks;
+static bool offline_timer_mutes;
+static long offline_timer_tick(void){
+    ++offline_timer_ticks;
+    if(offline_timer_mutes){
+        unsigned volume=(offline_timer_ticks&1)?0:0x3FFF;
+        Psyz_SpuWrite(0x180,volume);Psyz_SpuWrite(0x182,volume);
+    }
+    return 1;
+}
+#endif
+
+ZTEST(audio_clock, root_counter_tracks_samples_and_ignores_host_delay) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=getenv("PSYZ_AUDIO_CLOCK");
+    if(!clock || strcmp(clock,"video"))zskip("requires PSYZ_AUDIO_CLOCK=video at process startup");
+    Psyz_AudioDestroy();zassert_s32_eq(0,Psyz_AudioInit());
+    offline_timer_ticks=0;
+    zassert_s32_eq(1,SetRCnt(RCntCNT2,0x44E8,RCntMdINTR));
+    long event=OpenEvent(RCntCNT2,EvSpINT,EvMdINTR,offline_timer_tick);
+    zassert_s32_eq(1,event!=-1);zassert_s32_eq(1,EnableEvent(event));
+    zassert_s32_eq(1,StartRCnt(RCntCNT2));
+    for(unsigned i=0;i<6;++i)Sdl3Audio_VBlank(false);
+    zassert_u32_eq(24,offline_timer_ticks);
+    long phase=GetRCnt(RCntCNT2);SDL_Delay(40);
+    zassert_s32_eq(phase,GetRCnt(RCntCNT2));zassert_u32_eq(24,offline_timer_ticks);
+    Psyz_AudioPause();Sdl3Audio_VBlank(false);zassert_u32_eq(24,offline_timer_ticks);
+    Psyz_AudioUnpause();
+    for(unsigned i=0;i<54;++i)Sdl3Audio_VBlank(false);
+    zassert_u32_eq(240,offline_timer_ticks);
+    StopRCnt(RCntCNT2);DisableEvent(event);CloseEvent(event);
+#endif
+}
+
+ZTEST(audio_clock, root_counter_changes_pcm_inside_video_frame) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=getenv("PSYZ_AUDIO_CLOCK");
+    if(!clock || strcmp(clock,"video"))zskip("requires PSYZ_AUDIO_CLOCK=video at process startup");
+    Psyz_AudioDestroy();zassert_s32_eq(0,Psyz_AudioInit());
+    static short expected[4414*2];static AudioCaptureProof proof;
+    memset(&proof,0,sizeof(proof));
+    capture_test_voice();Psyz_SpuPullSamples(expected,4414);capture_test_voice();
+    offline_timer_ticks=0;offline_timer_mutes=true;
+    zassert_s32_eq(1,SetRCnt(RCntCNT2,0x44E8,RCntMdINTR));
+    long event=OpenEvent(RCntCNT2,EvSpINT,EvMdINTR,offline_timer_tick);
+    zassert_s32_eq(1,event!=-1);EnableEvent(event);StartRCnt(RCntCNT2);
+    Psyz_AudioSetCaptureCallback(capture_playback_pcm,&proof);
+    for(unsigned i=0;i<6;++i)Sdl3Audio_VBlank(false);
+    Psyz_AudioSetCaptureCallback(NULL,NULL);
+    StopRCnt(RCntCNT2);DisableEvent(event);CloseEvent(event);offline_timer_mutes=false;
+    zassert_u32_eq(24,offline_timer_ticks);zassert_u32_eq(4414,proof.frames);zassert_s32_eq(0,proof.overflow);
+    for(unsigned frame=0;frame<4414;++frame){
+        bool muted=((frame*4/735)&1)!=0;
+        for(unsigned ch=0;ch<2;++ch)zassert_s32_eq(muted?0:expected[frame*2+ch],proof.samples[frame*2+ch]);
+    }
+#endif
+}
+
+ZTEST(audio_clock, synchronous_wait_services_timer_without_vblank) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=getenv("PSYZ_AUDIO_CLOCK");
+    if(!clock || strcmp(clock,"video"))zskip("requires PSYZ_AUDIO_CLOCK=video at process startup");
+    Psyz_AudioDestroy();zassert_s32_eq(0,Psyz_AudioInit());capture_test_voice();
+    static AudioCaptureProof proof;memset(&proof,0,sizeof(proof));
+    offline_timer_ticks=0;
+    zassert_s32_eq(1,SetRCnt(RCntCNT2,0x44E8,RCntMdINTR));
+    long event=OpenEvent(RCntCNT2,EvSpINT,EvMdINTR,offline_timer_tick);
+    zassert_s32_eq(1,event!=-1);EnableEvent(event);StartRCnt(RCntCNT2);
+    Psyz_AudioSetCaptureCallback(capture_playback_pcm,&proof);
+    int vblank=VSync(-1);
+    for(unsigned i=1;i<=4;++i){zassert_s32_eq(1,Psyz_AudioWaitForTimer());zassert_u32_eq(i,offline_timer_ticks);}
+    zassert_s32_eq(vblank,VSync(-1));zassert_u32_eq(735,proof.frames);
+    zassert_u32_eq(4,proof.calls);zassert_s32_eq(0,proof.overflow);
+    Psyz_AudioPause();zassert_s32_eq(0,Psyz_AudioWaitForTimer());zassert_u32_eq(4,proof.calls);
+    Psyz_AudioSetCaptureCallback(NULL,NULL);Psyz_AudioUnpause();
+    StopRCnt(RCntCNT2);DisableEvent(event);CloseEvent(event);
+#endif
+}

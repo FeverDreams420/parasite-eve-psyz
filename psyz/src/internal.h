@@ -27,6 +27,10 @@
 // audio pause when the application returns from the background.
 int Psyz_AudioIsPaused(void);
 
+// Offline sample clock and root-counter deadlines; no host-time advancement.
+unsigned Psyz_KernelAudioBatch(unsigned maximum);
+void Psyz_KernelAdvanceAudio(unsigned frames);
+
 // Delivers a kernel event as an emulated device interrupt would: right away,
 // or at ExitCriticalSection when the caller is inside a critical section.
 void Psyz_KernelRaise(unsigned int desc, unsigned int spec);

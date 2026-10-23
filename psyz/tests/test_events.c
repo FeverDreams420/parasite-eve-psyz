@@ -89,6 +89,7 @@ int main(void) {
 #include <kernel.h>
 #include <libapi.h>
 #include <libetc.h>
+#include <libgpu.h>
 #include <libcd.h>
 
 long ChangeClearRCnt(long t, long flag);
@@ -183,6 +184,10 @@ static long chain_handler(void) {
 static PsyzVsyncMode saved_vsync_mode;
 ZTEST_SETUP(events) {
 #if !defined(__psx__) && !defined(__PSP__)
+    // Initialize first: headless startup installs its default timing mode.
+    // Apply the required real-time limiter after that, without a blank.
+    ResetGraph(0);
+    DISPENV display;SetDefDispEnv(&display,0,0,320,240);PutDispEnv(&display);
     // All RCNT tests need a frame limiter to pass
     saved_vsync_mode = Psyz_VideoGetVsyncMode();
     Psyz_VideoSetVsyncMode(PSYZ_VSYNC_OFF);
