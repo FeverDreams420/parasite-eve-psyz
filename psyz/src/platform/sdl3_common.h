@@ -891,6 +891,8 @@ static void SetFullScreen(bool isFullscreen) {
 }
 #endif
 
+SDL_Window *Psyz_GetWindow_SDL3(void) { return sdl3_window; }
+
 bool Psyz_SetFullscreen_SDL3(bool enabled) {
 #ifndef PLATFORM_IOS
     if (!sdl3_window) return !enabled;
