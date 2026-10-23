@@ -708,6 +708,33 @@ ZTEST(gpu, move_image_overlap) {
     ASSERT_FRAME("move_image_overlap", 0, 1.0f);
 }
 
+ZTEST(gpu, polygon_attribute_batch_boundaries) {
+    enum { width=168, height=104 };
+    static u16 expected[width*height], actual[width*height];
+    memset(expected,0,sizeof(expected));
+    RECT region={0,0,width,height};
+    ClearImage(&region,0,0,0);
+    DrawSync(0);
+    for (unsigned i=0;i<1025;++i) {
+        POLY_G4 quad={0};
+        u8 r=(i&31)*8,g=((i*7)&31)*8,b=((i*13+1)&31)*8;
+        int x=(i%41)*4,y=(i/41)*4;
+        setPolyG4(&quad);
+        setXYWH(&quad,x,y,2,2);
+        setRGB0(&quad,r,g,b);setRGB1(&quad,r,g,b);
+        setRGB2(&quad,r,g,b);setRGB3(&quad,r,g,b);
+        DrawPrim(&quad);
+        u16 color=(r>>3)|((g>>3)<<5)|((b>>3)<<10);
+        expected[y*width+x]=expected[y*width+x+1]=color;
+        expected[(y+1)*width+x]=expected[(y+1)*width+x+1]=color;
+    }
+    DrawSync(0);
+    StoreImage(&region,(u_long*)actual);
+    DrawSync(0);
+    for (unsigned i=0;i<width*height;++i)
+        zexpect_u16_eq(expected[i],actual[i]);
+}
+
 ZTEST(gpu, clear_image_quantizes_rgb555_before_blending) {
     enum { width = 258, height = 6 };
     u16 expected[width * height], actual[width * height];
@@ -1911,6 +1938,14 @@ ZTEST(gpu, ps1_polygon_attribute_gradients) {
     LoadImage(&texture_rect,(u_long *)texture);
     LoadImage(&palette_rect,(u_long *)palette);
     DrawSync(0);
+    unsigned scales=1;
+#if defined(__psyz) && defined(PSYZ_HAS_INTERNAL_RESOLUTION_SCALE)
+    const char* headless=getenv("PSYZ_HEADLESS");
+    if (!headless || strcmp(headless,"1")) scales=PSYZ_INTERNAL_RES_MAX;
+#endif
+    for (unsigned scale=1;scale<=scales;++scale) {
+    zassert_s32_eq(0,Psyz_VideoSetInternalResolution(scale));
+    zassert_s32_eq(scale,Psyz_VideoGetInternalResolution());
     unsigned test=0;
     for(unsigned dither=0;dither<2;dither++)for(unsigned shape=0;shape<3;shape++)
     for(unsigned kind=0;kind<4;kind++)for(unsigned permutation=0;permutation<6;permutation++,test++) {
@@ -1946,4 +1981,6 @@ ZTEST(gpu, ps1_polygon_attribute_gradients) {
         zexpect_u32_eq(expected[test],hash);
     }
     zexpect_u32_eq(144,test);
+    }
+    zassert_s32_eq(0,Psyz_VideoSetInternalResolution(1));
 }

@@ -222,6 +222,12 @@ static SDL_GPUGraphicsPipeline* CreatePsxPipeline(
          .buffer_slot = 0,
          .format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4,
          .offset = offsetof(Vertex, twin)},
+        {.location = 4, .buffer_slot = 0,
+         .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+         .offset = offsetof(Vertex, polygon_uv)},
+        {.location = 5, .buffer_slot = 0,
+         .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+         .offset = offsetof(Vertex, polygon_rgb)},
     };
     // the shader outputs alpha 0 on B-F texels and alpha 1 on opaque ones
     static const SDL_GPUColorTargetBlendState blend[BLEND_COUNT] = {
@@ -261,9 +267,14 @@ static SDL_GPUGraphicsPipeline* CreatePsxPipeline(
                 .enable_blend = true,
             },
     };
+    SDL_GPUColorTargetBlendState blend_state=blend[mode];
+    if (mode == BLEND_MASK) {
+        blend_state.color_write_mask=SDL_GPU_COLORCOMPONENT_A;
+        blend_state.enable_color_write_mask=true;
+    }
     const SDL_GPUColorTargetDescription target = {
         .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        .blend_state = blend[mode],
+        .blend_state = blend_state,
     };
     const SDL_GPUGraphicsPipelineCreateInfo info = {
         .vertex_shader = vs,
@@ -416,7 +427,7 @@ static bool CreateGpuResources(void) {
     SDL_GPUShader* psx_vs =
         CreateShader(psx_vert, psx_vert_len, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
     SDL_GPUShader* psx_fs = CreateShader(
-        psx_frag, psx_frag_len, SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+        psx_frag, psx_frag_len, SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader* clear_vs = CreateShader(
         clear_vert, clear_vert_len, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* clear_fs = CreateShader(
@@ -601,39 +612,6 @@ static void SyncNativeVramToScaled(int x, int y, int w, int h) {
         .filter = SDL_GPU_FILTER_NEAREST,
     };
     SDL_BlitGPUTexture(cmd, &blit);
-}
-
-static void SyncScaledVramToNative(void) {
-    if (internal_res <= 1 || !scaled_vram_render) {
-        return;
-    }
-    int x0 = CLAMP(draw_area_start.x, 0, VRAM_W);
-    int y0 = CLAMP(draw_area_start.y, 0, VRAM_H);
-    int x1 = CLAMP(draw_area_end.x + 1, 0, VRAM_W);
-    int y1 = CLAMP(draw_area_end.y + 1, 0, VRAM_H);
-    if (x1 <= x0 || y1 <= y0) {
-        return;
-    }
-    SDL_GPUCommandBuffer* cmd = AcquireCmd();
-    if (!cmd) {
-        return;
-    }
-    const SDL_GPUBlitInfo blit = {
-        .source = {.texture = scaled_vram_render,
-                   .x = (Uint32)(x0 * internal_res),
-                   .y = (Uint32)(y0 * internal_res),
-                   .w = (Uint32)((x1 - x0) * internal_res),
-                   .h = (Uint32)((y1 - y0) * internal_res)},
-        .destination = {.texture = vram_render,
-                        .x = (Uint32)x0,
-                        .y = (Uint32)y0,
-                        .w = (Uint32)(x1 - x0),
-                        .h = (Uint32)(y1 - y0)},
-        .load_op = SDL_GPU_LOADOP_LOAD,
-        .filter = SDL_GPU_FILTER_NEAREST,
-    };
-    SDL_BlitGPUTexture(cmd, &blit);
-    MarkVramDirty((SDL_Rect){x0, y0, x1 - x0, y1 - y0});
 }
 
 static bool CreateScaledVramTarget(unsigned n) {
@@ -1156,6 +1134,37 @@ int Draw_ExequeSync() { return 0; }
 
 // optimization to avoid sampling the VRAM on an untextured batch draw
 static bool batch_has_texture = false;
+/* Retain the PS1's signed 12-fractional-bit attribute gradients while the
+ * GPU rasterizes the geometry, including at higher internal resolutions. */
+static void SetPolygonAttributes(Vertex* vertices) {
+    Vertex* a = &vertices[0];
+    Vertex* b = &vertices[1];
+    Vertex* c = &vertices[2];
+    Vertex* anchor = b->x <= a->x ? (c->x <= b->x ? c : b)
+                                 : (c->x < a->x ? c : a);
+    int64_t area = (int64_t)(b->x-a->x)*(c->y-a->y) -
+                   (int64_t)(b->y-a->y)*(c->x-a->x);
+    const int av[5] = {a->u,a->v,a->r,a->g,a->b};
+    const int bv[5] = {b->u,b->v,b->r,b->g,b->b};
+    const int cv[5] = {c->u,c->v,c->r,c->g,c->b};
+    const int origin[5] = {anchor->u,anchor->v,anchor->r,anchor->g,anchor->b};
+    for (int attribute=0; attribute<5; ++attribute) {
+        int64_t dx=0,dy=0;
+        if (area) {
+            dx=((int64_t)(bv[attribute]-av[attribute])*(c->y-a->y) -
+                (int64_t)(cv[attribute]-av[attribute])*(b->y-a->y))*4096/area;
+            dy=((int64_t)(cv[attribute]-av[attribute])*(b->x-a->x) -
+                (int64_t)(bv[attribute]-av[attribute])*(c->x-a->x))*4096/area;
+        }
+        for (int vertex=0; vertex<3; ++vertex) {
+            float value=(float)(origin[attribute]*4096+2048 +
+                (vertices[vertex].x-anchor->x)*dx +
+                (vertices[vertex].y-anchor->y)*dy)/4096.0f;
+            if (attribute<2) vertices[vertex].polygon_uv[attribute]=value;
+            else vertices[vertex].polygon_rgb[attribute-2]=value;
+        }
+    }
+}
 int Draw_PushPrim(u_long* packets, int max_len) {
     if (UseSoftwareBackend()) return software_rasterizer.push_prim(packets, max_len);
     int len = max_len;
@@ -1169,9 +1178,9 @@ int Draw_PushPrim(u_long* packets, int max_len) {
     u16 tpage = -1, clut = -1, pad2, pad3;
     Vertex* v;
 
-    // to ensure we always have space, we pretend we want to allocate a quad
-    // Gouraud read-ahead can write a colour into a fifth vertex slot.
-    Draw_EnsureBufferWillNotOverflow(5, 6);
+    // A quad has two independent attribute planes, hence six vertices.
+    // This also covers Gouraud's fifth-slot colour read-ahead.
+    Draw_EnsureBufferWillNotOverflow(6, 6);
     v = vertex_cur;
     if (isShadeTex) {
         v->r = (unsigned char)(*packets >> 0);
@@ -1229,7 +1238,19 @@ int Draw_PushPrim(u_long* packets, int max_len) {
                     VRGBA(vertex_cur[3]) = VRGBA(vertex_cur[0]);
             }
 
-            SET_TC_ALL(vertex_cur, tpage, clut);
+            if (nVertices == 4) {
+                Vertex second[3] = {vertex_cur[1],vertex_cur[3],vertex_cur[2]};
+                memcpy(vertex_cur+3,second,sizeof(second));
+                index_cur[3]=n_vertices+3;
+                index_cur[4]=n_vertices+4;
+                index_cur[5]=n_vertices+5;
+                nVertices=6;
+                SetPolygonAttributes(vertex_cur+3);
+            }
+            SetPolygonAttributes(vertex_cur);
+            for (int i=0;i<nVertices;++i) {
+                SET_TC(&vertex_cur[i], tpage | TPAGE_POLYGON, clut);
+            }
             Draw_EnqueueBuffer(nVertices, nIndices);
         } else {
             // shouldn't happen on a normal PSX application
@@ -1704,78 +1725,89 @@ void Draw_FlushBuffer(void) {
     }
     SDL_EndGPUCopyPass(copy);
 
-    const SDL_GPUColorTargetInfo target = {
-        .texture = GetRenderTarget(),
-        .load_op = SDL_GPU_LOADOP_LOAD,
-        .store_op = SDL_GPU_STOREOP_STORE,
-    };
-    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, NULL);
-    {
-        const float grid_scale_x = GetDrawGridXScale();
-        const float render_scale = (float)internal_res;
-        const SDL_GPUViewport grid_viewport = {
-            .x = (float)draw_offset.x * render_scale * (1.0f - grid_scale_x),
-            .y = 0.0f,
-            .w = (float)VRAM_W * render_scale * grid_scale_x,
-            .h = (float)VRAM_H * render_scale,
-            .min_depth = 0.0f,
-            .max_depth = 1.0f,
+    /* Native VRAM is independently rasterized: gameplay readback and texture
+     * feedback must not depend on high-resolution sample positions. */
+    for (unsigned target_index=0; target_index<(internal_res>1 ? 2u : 1u);
+         ++target_index) {
+        unsigned target_scale=target_index ? internal_res : 1;
+        const SDL_GPUColorTargetInfo target = {
+            .texture = target_index ? scaled_vram_render : vram_render,
+            .load_op = SDL_GPU_LOADOP_LOAD,
+            .store_op = SDL_GPU_STOREOP_STORE,
         };
-        SDL_SetGPUViewport(pass, &grid_viewport);
-    }
-    SDL_Rect scaled_scissor = {
-        scissor_rect.x * (int)internal_res, scissor_rect.y * (int)internal_res,
-        scissor_rect.w * (int)internal_res, scissor_rect.h * (int)internal_res};
-    SDL_SetGPUScissor(pass, &scaled_scissor);
-    const SDL_GPUBufferBinding vb = {.buffer = vbuf};
-    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-    const SDL_GPUBufferBinding ib = {.buffer = ibuf};
-    SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-    const SDL_GPUTextureSamplerBinding sampler_binding = {
-        .texture = vram_sample, .sampler = vram_sampler};
-    SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
-    const float offset_ubo[4] = {
-        (float)draw_offset.x, (float)draw_offset.y, 0, 0};
-    SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, NULL);
+        {
+            const float grid_scale_x = GetDrawGridXScale();
+            const float render_scale = (float)target_scale;
+            const SDL_GPUViewport grid_viewport = {
+                .x = (float)draw_offset.x * render_scale * (1.0f - grid_scale_x),
+                .y = 0.0f,
+                .w = (float)VRAM_W * render_scale * grid_scale_x,
+                .h = (float)VRAM_H * render_scale,
+                .min_depth = 0.0f,
+                .max_depth = 1.0f,
+            };
+            SDL_SetGPUViewport(pass, &grid_viewport);
+        }
+        SDL_Rect scaled_scissor = {
+            scissor_rect.x * (int)target_scale, scissor_rect.y * (int)target_scale,
+            scissor_rect.w * (int)target_scale, scissor_rect.h * (int)target_scale};
+        SDL_SetGPUScissor(pass, &scaled_scissor);
+        const SDL_GPUBufferBinding vb = {.buffer = vbuf};
+        SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+        const SDL_GPUBufferBinding ib = {.buffer = ibuf};
+        SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+        const SDL_GPUTextureSamplerBinding sampler_binding = {
+            .texture = vram_sample, .sampler = vram_sampler};
+        SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
+        const float offset_ubo[4] = {
+            (float)draw_offset.x, (float)draw_offset.y, 0, 0};
+        SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
+        const u32 color_pass[4]={0,0,0,0};
+        SDL_PushGPUFragmentUniformData(cmd,0,color_pass,sizeof(color_pass));
 
-    // every primitive (including lines, expanded to quads) is a triangle list
-    const int prim_size = 3;
-    int start = 0;
-    while (start < n_indices) {
-        Vertex* v = &vertex_buf[index_buf[start]];
-        bool need_subtract = is_subtract_abr(v);
-        int end = start + prim_size;
-        while (end < n_indices) {
-            v = &vertex_buf[index_buf[end]];
-            bool next_subtract = is_subtract_abr(v);
-            if (next_subtract != need_subtract) {
-                break;
+        // every primitive (including lines, expanded to quads) is a triangle list
+        const int prim_size = 3;
+        int start = 0;
+        while (start < n_indices) {
+            Vertex* v = &vertex_buf[index_buf[start]];
+            bool need_subtract = is_subtract_abr(v);
+            int end = start + prim_size;
+            while (end < n_indices) {
+                v = &vertex_buf[index_buf[end]];
+                bool next_subtract = is_subtract_abr(v);
+                if (next_subtract != need_subtract) {
+                    break;
+                }
+                end += prim_size;
             }
-            end += prim_size;
-        }
-        while (need_subtract && start < end) {
-            int group_end = SubtractGroupEnd(start, end);
-            Uint32 count = (Uint32)(group_end - start);
-            SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_SUB]);
-            SDL_DrawGPUIndexedPrimitives(pass, count, 1, (Uint32)start, 0, 0);
-            if (!is_untextured(&vertex_buf[index_buf[start]])) {
-                SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_SUB_OPAQUE]);
+            while (need_subtract && start < end) {
+                int group_end = SubtractGroupEnd(start, end);
+                Uint32 count = (Uint32)(group_end - start);
+                SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_SUB]);
+                SDL_DrawGPUIndexedPrimitives(pass, count, 1, (Uint32)start, 0, 0);
+                if (!is_untextured(&vertex_buf[index_buf[start]])) {
+                    SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_SUB_OPAQUE]);
+                    SDL_DrawGPUIndexedPrimitives(
+                        pass, count, 1, (Uint32)start, 0, 0);
+                }
+                start = group_end;
+            }
+            if (start < end) {
+                SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_ADD]);
                 SDL_DrawGPUIndexedPrimitives(
-                    pass, count, 1, (Uint32)start, 0, 0);
+                    pass, (Uint32)(end - start), 1, (Uint32)start, 0, 0);
+                start = end;
             }
-            start = group_end;
         }
-        if (start < end) {
-            SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_ADD]);
-            SDL_DrawGPUIndexedPrimitives(
-                pass, (Uint32)(end - start), 1, (Uint32)start, 0, 0);
-            start = end;
-        }
+        /* Blend factors use source alpha as an operation selector. Write the
+         * actual PS1 mask bit separately, without changing the color result. */
+        const u32 mask_pass[4]={1,0,0,0};
+        SDL_PushGPUFragmentUniformData(cmd,0,mask_pass,sizeof(mask_pass));
+        SDL_BindGPUGraphicsPipeline(pass,pipe_tri[BLEND_MASK]);
+        SDL_DrawGPUIndexedPrimitives(pass,(Uint32)n_indices,1,0,0,0);
+        SDL_EndGPURenderPass(pass);
     }
-    SDL_EndGPURenderPass(pass);
-    if (internal_res <= 1) {
-        MarkVramDirty(scissor_rect);
-    }
-    SyncScaledVramToNative();
+    MarkVramDirty(scissor_rect);
     Draw_ResetBuffer();
 }

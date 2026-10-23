@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Compiles the SDL_GPU shaders to SPIR-V (Vulkan), MSL (Metal) and DXIL (D3D12)
-# Requirements: glslangValidator (glslang), xxd, spirv-cross, dxc.
+# Requirements: glslangValidator, xxd, spirv-cross, dxc or SDL shadercross.
 
 # DXIL/Windows requires signing. The best way to pre-compile the shader is
 # C:\Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/dxc.exe
@@ -15,8 +15,9 @@ if ! command -v spirv-cross > /dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v dxc > /dev/null 2>&1; then
-    echo "build_shaders.sh: dxc not found; needed for DXIL (D3D12) headers" >&2
+if ! command -v dxc > /dev/null 2>&1 &&
+   ! command -v shadercross > /dev/null 2>&1; then
+    echo "build_shaders.sh: dxc or SDL shadercross required for DXIL headers" >&2
     exit 1
 fi
 
@@ -32,7 +33,10 @@ emit_header() {
     } > "${name}_${suffix}.h"
 }
 
-for shader in psx.vert psx.frag clear.vert clear.frag; do
+if [ "$#" -eq 0 ]; then
+    set -- psx.vert psx.frag clear.vert clear.frag
+fi
+for shader in "$@"; do
     name=$(echo "$shader" | tr . _)
     stage=${shader##*.}
     glslangValidator -V --target-env vulkan1.0 -S "$stage" \
@@ -41,11 +45,16 @@ for shader in psx.vert psx.frag clear.vert clear.frag; do
     spirv-cross --msl "$shader.spv" --output "$shader.metal"
     emit_header "$shader.metal" "$name" msl
     case "$stage" in
-        vert) profile=vs_6_0 ;;
-        frag) profile=ps_6_0 ;;
+        vert) profile=vs_6_0; cross_stage=vertex ;;
+        frag) profile=ps_6_0; cross_stage=fragment ;;
     esac
     spirv-cross --hlsl --shader-model 60 "$shader.spv" --output "$shader.hlsl"
-    dxc -T "$profile" -E main "$shader.hlsl" -Fo "$shader.dxil"
+    if command -v dxc > /dev/null 2>&1; then
+        dxc -T "$profile" -E main "$shader.hlsl" -Fo "$shader.dxil"
+    else
+        shadercross "$shader.hlsl" -s HLSL -d DXIL -t "$cross_stage" \
+            -o "$shader.dxil"
+    fi
     emit_header "$shader.dxil" "$name" dxil
     rm -f "$shader.spv" "$shader.metal" "$shader.hlsl" "$shader.dxil"
 done

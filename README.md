@@ -33,6 +33,15 @@ device. It still requires a working native video driver and GPU.
 The GPU mode uses the existing rendering and readback APIs; captured frames
 and `StoreImage` retain their native-resolution dimensions. Selecting this
 mode alone does not verify high-resolution image detail or gameplay parity.
+The SDL3 GPU renderer draws native VRAM independently of the scaled target,
+so texture feedback and readback retain native sampling. Polygon attribute
+planes use signed 12-bit fractional gradients and the original half-unit
+bias. A separate alpha write retains the texture mask bit after blending.
+
+GPU shader headers can be regenerated with
+`sh psyz/src/platform/shaders/build_shaders.sh` using glslangValidator,
+SPIRV-Cross, xxd, and either dxc or SDL shadercross. Optional shader names
+(for example `psx.vert psx.frag`) limit regeneration to those shaders.
 
 ## PSY-Q decomp
 

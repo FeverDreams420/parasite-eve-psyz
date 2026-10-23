@@ -31,11 +31,14 @@ typedef struct {
     unsigned short u, v, c, t;
     unsigned char r, g, b, a;
     unsigned int twin;
+    float polygon_uv[2];
+    float polygon_rgb[3];
 } Vertex;
 
 // ===== SDL3 reserved TPAGE flags, invalid on real hardware =====
 #define TPAGE_NOTEXTURE 0x8000 // flag untextured poly
 #define TPAGE_DITHER 0x4000    // flag a dithered primitive
+#define TPAGE_POLYGON 0x2000   // PS1 integer polygon sampling
 
 #define VRGBA(p) (*(unsigned int*)(&((p).r)))
 #define SET_TC(p, tpage, clut)                                                 \
@@ -132,6 +135,7 @@ typedef enum {
     BLEND_ADD,
     BLEND_SUB,
     BLEND_SUB_OPAQUE,
+    BLEND_MASK,
     BLEND_COUNT,
 } BlendMode;
 

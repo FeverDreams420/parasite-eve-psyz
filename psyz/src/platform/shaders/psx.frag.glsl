@@ -12,13 +12,16 @@ layout(location = 8) flat in uint indexMask;
 layout(location = 9) flat in uint dither;
 layout(location = 10) flat in ivec2 pageBase;
 layout(location = 11) flat in uvec4 texWindow;
+layout(location = 12) flat in uint polygon;
 
 layout(set = 2, binding = 0) uniform sampler2D texVram;
+layout(set = 3, binding = 0) uniform PassMode { uvec4 passMode; };
 
 uvec2 resolveTexel() {
     // PS1 interpolates at integer pixel coordinates, the GPU at pixel centres.
-    vec2 uv = rawUV - 0.5 * (dFdx(rawUV) + dFdy(rawUV)) + 1.0 / 512.0;
-    uvec2 texel = uvec2(clamp(floor(uv), vec2(0.0), vec2(255.0)));
+    vec2 uv = polygon != 0u ? rawUV :
+        rawUV - 0.5 * (dFdx(rawUV) + dFdy(rawUV)) + 1.0 / 512.0;
+    uvec2 texel = uvec2(ivec2(floor(uv))) & uvec2(255u);
     return (texel & texWindow.xy) | texWindow.zw;
 }
 
@@ -64,7 +67,12 @@ void main() {
     }
     // check for full transparency
     if (texColor == vec4(0, 0, 0, 0)) {
+        if (passMode.x != 0u) discard;
         FragColor = vec4(0);
+        return;
+    }
+    if (passMode.x != 0u) {
+        FragColor = vec4(0,0,0,textureMode == 0u ? 0.0 : texColor.a);
         return;
     }
     // check for setSemiTrans(p, 1)
@@ -78,7 +86,8 @@ void main() {
         modColor = texColor.rgb * vertexColor.rgb;
     } else {
         vec3 tex5 = floor(texColor.rgb * 31.0 + 0.5);
-        vec3 col8 = min(floor(vertexColor.rgb * 127.5 + 0.5), vec3(255.0));
+        vec3 col8 = min(floor(vertexColor.rgb * 127.5 +
+                             (polygon != 0u ? 0.0 : 0.5)), vec3(255.0));
         vec3 prod8 = min(tex5 * col8 / 16.0, vec3(255.0));
         modColor = dither != 0u ? prod8 / 255.0
                                 : floor(prod8 / 8.0) / 31.0;
