@@ -30,6 +30,10 @@ int Psyz_AudioIsPaused(void);
 // Offline sample clock and root-counter deadlines; no host-time advancement.
 unsigned Psyz_KernelAudioBatch(unsigned maximum);
 void Psyz_KernelAdvanceAudio(unsigned frames);
+void Psyz_KernelPauseHostClock(int paused);
+
+// Discard prefetched external CD input without resetting SPU voices/reverb.
+void Psyz_SpuFlushCdSamples(void);
 
 // Delivers a kernel event as an emulated device interrupt would: right away,
 // or at ExitCriticalSection when the caller is inside a critical section.

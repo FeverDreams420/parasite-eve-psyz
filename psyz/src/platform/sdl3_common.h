@@ -518,9 +518,13 @@ int Psyz_VideoVSync(int mode) {
 
 void Psyz_PauseHostClock_SDL3(bool paused) {
     if(paused){
-        if(!host_clock_pause_depth)host_clock_pause_count=(Uint32)Psyz_VideoVSync(-1);
+        if(!host_clock_pause_depth){
+            host_clock_pause_count=(Uint32)Psyz_VideoVSync(-1);
+            Psyz_KernelPauseHostClock(1);
+        }
         ++host_clock_pause_depth;
     }else if(host_clock_pause_depth && !--host_clock_pause_depth){
+        Psyz_KernelPauseHostClock(0);
         if(vsync_mode==PSYZ_VSYNC_LIMITLESS){
             limitless_vblank_base=host_clock_pause_count;
             limitless_frame_base=gpu_stats.total_frames;

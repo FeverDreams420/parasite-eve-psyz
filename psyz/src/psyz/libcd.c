@@ -869,6 +869,7 @@ static void psyz_xa_read(void) {
     }
     Psyz_AudioLock();
     xa_reset_stream();
+    Psyz_SpuFlushCdSamples();
     xa.cur_abs_sector = CdPosToInt(&CD_pos) - 1;
     xa.active = 1;
     is_playing = 1;
@@ -880,6 +881,7 @@ static void psyz_stop() {
     Psyz_AudioLock();
     is_playing = 0;
     xa.active = 0;
+    Psyz_SpuFlushCdSamples();
     data_read_active = 0;
     data_sector_valid = 0;
     close_track_file();
@@ -892,6 +894,7 @@ static void psyz_pause() {
     Psyz_AudioLock();
     is_playing = 0;
     xa.active = 0;
+    Psyz_SpuFlushCdSamples();
     data_read_active = 0;
     data_sector_valid = 0;
     Psyz_AudioUnlock();

@@ -965,6 +965,18 @@ ZTEST(libcd_playback, xa_playback) {
         }
         zassert_s16_eq(0x07FE, out[i * 2 + 1]);
     }
+    /* A short pull leaves decoded CD frames prefetched inside the SPU.
+     * Stopping the decoder must silence that buffer immediately as well. */
+    const int stop_commands[]={CdlStop,CdlPause};
+    for(unsigned command=0;command<2;++command){
+        CdControl(CdlSetloc,(u_char *)&loc,NULL);
+        CdControl(CdlReadN,NULL,NULL);
+        Psyz_SpuPullSamples(out,128);
+        zassert_s16_ne(0,out[100]);
+        CdControl(stop_commands[command],NULL,NULL);
+        Psyz_SpuPullSamples(out,256);
+        for(i=0;i<512;++i)zassert_s16_eq(0,out[i]);
+    }
 }
 
 ZTEST(libcd_playback, data_read_interrupts_xa_playback) {

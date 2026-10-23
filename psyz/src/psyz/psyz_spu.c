@@ -425,6 +425,12 @@ static void spu_tick(short* out) {
     }
 }
 
+void Psyz_SpuFlushCdSamples(void) {
+    Psyz_AudioLock();
+    spu.cd_ring_read=spu.cd_ring_count=0;
+    Psyz_AudioUnlock();
+}
+
 void Psyz_SpuPullSamples(short* out, int num_frames) {
     Psyz_AudioLock();
     if (!spu.initialized) {
