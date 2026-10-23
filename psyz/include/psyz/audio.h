@@ -60,6 +60,11 @@ int Psyz_AudioWaitForTimer(void);
  * Psyz_AudioUnpause must be called to resume.
  */
 void Psyz_AudioPause(void);
+int Psyz_AudioIsPaused(void);
+/** Host output gain only; does not alter emulated SPU registers or capture PCM.
+ * SDL backend, range 0..100, can be selected before audio initialization. */
+int Psyz_AudioSetOutputVolume(unsigned percent);
+unsigned Psyz_AudioGetOutputVolume(void);
 
 /**
  * @brief Resume audio playback after Psyz_AudioPause

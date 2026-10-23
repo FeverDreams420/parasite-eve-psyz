@@ -223,6 +223,12 @@ static PsyzVideoStats gpu_stats = {0};
 static void PollEvents(void);
 
 // overlay callbacks shared across backends
+static PsyzOverlayEventFilter_SDL3 overlay_event_filter;
+PsyzOverlayEventFilter_SDL3 Psyz_SetOverlayEventFilter_SDL3(PsyzOverlayEventFilter_SDL3 filter) {
+    PsyzOverlayEventFilter_SDL3 previous = overlay_event_filter;
+    overlay_event_filter = filter;
+    return previous;
+}
 static PsyzOverlayEventCB_SDL3 overlay_event_cb;
 PsyzOverlayEventCB_SDL3 Psyz_OverlayEvent_SDL3(PsyzOverlayEventCB_SDL3 cb) {
     const PsyzOverlayEventCB_SDL3 prev = overlay_event_cb;
@@ -680,60 +686,45 @@ static unsigned int PadRead_Keyboard(u_long* config, int config_len) {
     }
     return r;
 }
+static int gamepad_p1[16] = {
+    SDL_GAMEPAD_BUTTON_COUNT, SDL_GAMEPAD_BUTTON_COUNT + 1,
+    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+    SDL_GAMEPAD_BUTTON_NORTH, SDL_GAMEPAD_BUTTON_EAST,
+    SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_WEST,
+    SDL_GAMEPAD_BUTTON_BACK, SDL_GAMEPAD_BUTTON_LEFT_STICK,
+    SDL_GAMEPAD_BUTTON_RIGHT_STICK, SDL_GAMEPAD_BUTTON_START,
+    SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+    SDL_GAMEPAD_BUTTON_DPAD_DOWN, SDL_GAMEPAD_BUTTON_DPAD_LEFT
+};
+int Psyz_GetKeyboardBinding_SDL3(unsigned button) {
+    return button < 16 ? (int)keyb_p1[button] : -1;
+}
+int Psyz_SetKeyboardBinding_SDL3(unsigned button, SDL_Scancode key) {
+    if (button >= 16 || key <= SDL_SCANCODE_UNKNOWN || key >= SDL_SCANCODE_COUNT ||
+        key == SDL_SCANCODE_ESCAPE) return -1;
+    keyb_p1[button] = key;
+    return 0;
+}
+int Psyz_GetGamepadBinding_SDL3(unsigned button) {
+    return button < 16 ? gamepad_p1[button] : -1;
+}
+int Psyz_SetGamepadBinding_SDL3(unsigned button, int binding) {
+    if (button >= 16 || binding < 0 || binding > SDL_GAMEPAD_BUTTON_COUNT + 1) return -1;
+    gamepad_p1[button] = binding;
+    return 0;
+}
 static unsigned int PadRead_Gamepad(struct Gamepad* g) {
-    if (!g || !g->dev) {
-        return 0;
+    if (!g || !g->dev) return 0;
+    unsigned int result = 0;
+    for (unsigned i = 0; i < 16; ++i) {
+        int binding = gamepad_p1[i];
+        bool pressed = binding < SDL_GAMEPAD_BUTTON_COUNT
+            ? SDL_GetGamepadButton(g->dev, (SDL_GamepadButton)binding)
+            : SDL_GetGamepadAxis(g->dev, binding == SDL_GAMEPAD_BUTTON_COUNT
+                ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8000;
+        if (pressed) result |= 1u << i;
     }
-    unsigned int r = 0;
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_NORTH)) {
-        r |= PADRup;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_SOUTH)) {
-        r |= PADRdown;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_WEST)) {
-        r |= PADRleft;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_EAST)) {
-        r |= PADRright;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_DPAD_UP)) {
-        r |= PADLup;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) {
-        r |= PADLdown;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) {
-        r |= PADLleft;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) {
-        r |= PADLright;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {
-        r |= PADn;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
-        r |= PADl;
-    }
-    if (SDL_GetGamepadAxis(g->dev, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 8000) {
-        r |= PADo;
-    }
-    if (SDL_GetGamepadAxis(g->dev, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8000) {
-        r |= PADm;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_LEFT_STICK)) {
-        r |= PADi;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
-        r |= PADj;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_START)) {
-        r |= PADh;
-    }
-    if (SDL_GetGamepadButton(g->dev, SDL_GAMEPAD_BUTTON_BACK)) {
-        r |= PADk;
-    }
-    return r;
+    return result;
 }
 
 static unsigned int SinglePadRead(int id) {
@@ -900,9 +891,23 @@ static void SetFullScreen(bool isFullscreen) {
 }
 #endif
 
+bool Psyz_SetFullscreen_SDL3(bool enabled) {
+#ifndef PLATFORM_IOS
+    if (!sdl3_window) return !enabled;
+    /* Also account for window-manager changes, not just our F4 shortcut. */
+    is_fullscreen = (SDL_GetWindowFlags(sdl3_window) & SDL_WINDOW_FULLSCREEN) != 0;
+    SetFullScreen(enabled);
+    return is_fullscreen == enabled;
+#else
+    (void)enabled;
+    return false;
+#endif
+}
+
 static void PollEvents(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (overlay_event_filter && overlay_event_filter(&event)) continue;
         if (overlay_event_cb) {
             overlay_event_cb(&event);
         }

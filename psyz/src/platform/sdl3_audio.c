@@ -9,6 +9,15 @@
 #define SAMPLE_SIZE sizeof(short)
 
 static SDL_AudioStream* sdl_stream;
+static unsigned output_volume = 100;
+int Psyz_AudioSetOutputVolume(unsigned percent) {
+    if (percent > 100) return -1;
+    if (sdl_stream && !SDL_SetAudioStreamGain(sdl_stream, (float)percent / 100.0f)) return -1;
+    output_volume = percent;
+    return 0;
+}
+unsigned Psyz_AudioGetOutputVolume(void) { return output_volume; }
+
 static SDL_Mutex* mutex;
 static bool video_clock, video_paused;
 static unsigned video_remainder;
@@ -93,6 +102,7 @@ int Psyz_AudioInit(void) {
         return -1;
     }
 
+    SDL_SetAudioStreamGain(sdl_stream, (float)output_volume / 100.0f);
     if (!SDL_ResumeAudioStreamDevice(sdl_stream)) {
         WARNF("failed to resume audio device: %s", SDL_GetError());
     }
