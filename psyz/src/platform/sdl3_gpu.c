@@ -11,6 +11,7 @@
 #include "sdl3_common.h"
 #include "rasterizer.h"
 static bool headless_renderer;
+static bool hidden_gpu_renderer;
 static bool UseSoftwareBackend(void);
 #define PSYZ_SOFTWARE_ROUTING
 #include "sdl3_draw.h"
@@ -453,6 +454,7 @@ bool InitPlatform() {
 
     const char* headless = SDL_getenv("PSYZ_HEADLESS");
     headless_renderer = headless && strcmp(headless, "1") == 0;
+    hidden_gpu_renderer = headless && strcmp(headless, "gpu") == 0;
     if (headless_renderer) {
         if (!SDL_Init(SDL_INIT_EVENTS)) return false;
         SoftwareRasterizer_Reset();
@@ -498,8 +500,9 @@ bool InitPlatform() {
     }
 
     // useful for offscreen rendering with SDL_VIDEODRIVER=offscreen
-    swapchain_ok = SDL_ClaimWindowForGPUDevice(device, sdl3_window);
-    if (!swapchain_ok) {
+    swapchain_ok = !hidden_gpu_renderer &&
+                   SDL_ClaimWindowForGPUDevice(device, sdl3_window);
+    if (!swapchain_ok && !hidden_gpu_renderer) {
         WARNF("no swapchain, presentation disabled: %s", SDL_GetError());
     }
 
@@ -508,6 +511,7 @@ bool InitPlatform() {
     }
 
     cur_tpage = 0;
+    if (hidden_gpu_renderer) vsync_mode = PSYZ_VSYNC_LIMITLESS;
     Sdl3Common_TimingInit();
 
     is_platform_init_successful = true;
@@ -1051,7 +1055,8 @@ static void ApplyDisplayPendingChanges() {
     }
     ApplyPendingInternalRes();
     if (cur_display_size.x != display_size.x ||
-        cur_display_size.y != display_size.y || !is_window_visible) {
+        cur_display_size.y != display_size.y ||
+        (!is_window_visible && !hidden_gpu_renderer)) {
         if (!is_window_visible) {
 #ifdef PLATFORM_IOS
             SDL_GetWindowSizeInPixels(
@@ -1062,7 +1067,7 @@ static void ApplyDisplayPendingChanges() {
         }
         cur_display_size = display_size;
     }
-    if (!is_window_visible) {
+    if (!is_window_visible && !hidden_gpu_renderer) {
         SDL_ShowWindow(sdl3_window);
         is_window_visible = true;
 #ifdef PLATFORM_IOS

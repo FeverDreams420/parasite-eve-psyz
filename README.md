@@ -21,6 +21,19 @@ The platforms currently supported include:
 
 PsyZ is designed to be extensible, and support for additional platforms may be added in the future.
 
+### Automated rendering without a visible window
+
+With the SDL3 GPU backend, `PSYZ_HEADLESS=1` selects the deterministic
+software rasterizer at native resolution. `PSYZ_HEADLESS=gpu` instead keeps
+an SDL window hidden, renders with the actual GPU backend, and disables
+swapchain presentation and frame limiting. This permits internal-resolution
+tests on systems where the SDL `offscreen` video driver cannot create a GPU
+device. It still requires a working native video driver and GPU.
+
+The GPU mode uses the existing rendering and readback APIs; captured frames
+and `StoreImage` retain their native-resolution dimensions. Selecting this
+mode alone does not verify high-resolution image detail or gameplay parity.
+
 ## PSY-Q decomp
 
 To achieve a high level of API compatibility and accuracy, PsyZ uses decompiled PSY-Q code that matches the original binaries exactly. This decompilation is an ongoing process. Please navigate to the `decomp/` directory for more details.

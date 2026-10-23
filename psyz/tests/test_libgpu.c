@@ -5,6 +5,9 @@
 #include <kernel.h>
 #include <libetc.h>
 #include <libgpu.h>
+#ifdef __psyz
+#include <SDL3/SDL.h>
+#endif
 
 #include "ztest.h"
 
@@ -754,6 +757,19 @@ ZTEST(gpu, move_image_internal_res) {
     zassert_s32_eq(1, Psyz_VideoGetInternalResolution());
     VSync(0);
     ASSERT_FRAME("move_image", 0, 1.0f);
+#ifdef __psyz
+    const char* headless = getenv("PSYZ_HEADLESS");
+    if (headless && strcmp(headless, "gpu") == 0) {
+        int count = 0;
+        SDL_Window** windows = SDL_GetWindows(&count);
+        zassert_s32_eq(1, count);
+        zassert_s32_eq(1, windows != NULL);
+        SDL_WindowFlags flags = SDL_GetWindowFlags(windows[0]);
+        SDL_free(windows);
+        zassert_s32_eq(1, (flags & SDL_WINDOW_HIDDEN) != 0);
+        zassert_s32_eq(PSYZ_VSYNC_LIMITLESS, Psyz_VideoGetVsyncMode());
+    }
+#endif
 }
 
 ZTEST(gpu, disp_mask_preserves_vram) {
