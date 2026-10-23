@@ -18,6 +18,17 @@ static volatile int is_paused;
 static int is_audio_init;
 static uintptr_t audio_stack_lo, audio_stack_hi;
 
+static PsyzAudioCaptureCallback capture_callback;
+static void* capture_userdata;
+
+void Psyz_AudioSetCaptureCallback(PsyzAudioCaptureCallback callback,
+                                  void* userdata) {
+    Psyz_AudioLock();
+    capture_callback=callback;
+    capture_userdata=userdata;
+    Psyz_AudioUnlock();
+}
+
 void Psyz_SpuSasPrerender(void);
 static int AudioThread(SceSize args, void* argp) {
     // double-buffered so the SPU can mix one block while the other one plays
@@ -37,6 +48,7 @@ static int AudioThread(SceSize args, void* argp) {
             memset(buf[cur], 0, sizeof(buf[cur]));
         } else {
             Psyz_SpuPullSamples(buf[cur], BUF_FRAMES);
+            if (capture_callback) capture_callback(buf[cur],BUF_FRAMES,capture_userdata);
         }
         Psyz_AudioUnlock();
         sceAudioOutputBlocking(chan, PSP_AUDIO_VOLUME_MAX, buf[cur]);
@@ -90,6 +102,7 @@ int Psyz_AudioInit(void) {
 
 void Psyz_AudioDestroy(void) {
     if (!is_audio_init) {
+        capture_callback=NULL;capture_userdata=NULL;
         return;
     }
     stop_requested = 1;
@@ -101,6 +114,7 @@ void Psyz_AudioDestroy(void) {
     sema = -1;
     chan = -1;
     audio_stack_lo = audio_stack_hi = 0;
+    capture_callback=NULL;capture_userdata=NULL;
     is_audio_init = 0;
 }
 

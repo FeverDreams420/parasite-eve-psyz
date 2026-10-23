@@ -13,6 +13,17 @@ static bool video_clock, video_paused;
 static unsigned video_remainder;
 static bool video_pal;
 
+static PsyzAudioCaptureCallback capture_callback;
+static void* capture_userdata;
+
+void Psyz_AudioSetCaptureCallback(PsyzAudioCaptureCallback callback,
+                                  void* userdata) {
+    Psyz_AudioLock();
+    capture_callback=callback;
+    capture_userdata=userdata;
+    Psyz_AudioUnlock();
+}
+
 // Audio callback: SDL pulls audio from the SPU via this callback.
 // The audio driver synchronizes the SPU based on the pulled samples.
 static void SDLCALL audio_callback(void* userdata, SDL_AudioStream* stream,
@@ -30,6 +41,7 @@ static void SDLCALL audio_callback(void* userdata, SDL_AudioStream* stream,
         if (batch > 2048)
             batch = 2048;
         Psyz_SpuPullSamples(buf, batch);
+        if (capture_callback) capture_callback(buf,batch,capture_userdata);
         SDL_PutAudioStreamData(stream, buf, batch * N_CHANNELS * SAMPLE_SIZE);
         num_frames -= batch;
     }
@@ -98,6 +110,7 @@ void Psyz_AudioDestroy(void) {
         SDL_DestroyMutex(mutex);
         mutex = NULL;
     }
+    capture_callback=NULL;capture_userdata=NULL;
     is_audio_init = false;
     video_clock = false;
 }
@@ -146,5 +159,6 @@ void Sdl3Audio_VBlank(bool pal) {
     short samples[2 * 883];
     SDL_LockMutex(mutex);
     Psyz_SpuPullSamples(samples, (int)frames);
+    if (capture_callback) capture_callback(samples,(int)frames,capture_userdata);
     SDL_UnlockMutex(mutex);
 }

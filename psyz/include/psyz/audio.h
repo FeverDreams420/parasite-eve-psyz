@@ -11,6 +11,21 @@ extern "C" {
 #endif
 
 /**
+ * Observe playback PCM after mixing, without pulling additional samples.
+ * Frames are interleaved signed 16-bit stereo at 44100 Hz, in host byte order.
+ * The buffer is valid only during the callback and must not be modified.
+ * Runs under the audio lock, on the SDL/PSP audio thread or video-clock thread.
+ * Do not call audio/SPU APIs from the callback. Keep device callbacks brief.
+ * Pass NULL to detach; return guarantees the old callback is no longer running.
+ * Registration may precede init; AudioDestroy clears it. Direct SpuPullSamples
+ * calls bypass this observer. Paused playback emits no callbacks.
+ */
+typedef void (*PsyzAudioCaptureCallback)(const short* samples, int frames,
+                                         void* userdata);
+void Psyz_AudioSetCaptureCallback(PsyzAudioCaptureCallback callback,
+                                  void* userdata);
+
+/**
  * @brief Initialize the audio subsystem
  *
  * Opens the host audio device and the SPU mixer. Idempotent.

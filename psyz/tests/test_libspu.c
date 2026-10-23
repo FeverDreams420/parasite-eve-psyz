@@ -1396,3 +1396,94 @@ ZTEST(spu_malloc, SpuMallocWithStartAddrSplitsFreeBlock) {
     zexpect_u32_eq(0u, _spu_memList[2].addr);
     zexpect_u32_eq(0u, _spu_memList[2].size);
 }
+
+#if defined(__psyz) && !defined(__PSP__)
+#include <SDL3/SDL.h>
+extern void Sdl3Audio_VBlank(bool pal);
+
+typedef struct {
+    short samples[4414*2];
+    unsigned frames,calls;
+    bool overflow;
+} AudioCaptureProof;
+
+static void capture_playback_pcm(const short* samples,int frames,void* userdata) {
+    AudioCaptureProof* proof=userdata;
+    ++proof->calls;
+    if(frames<=0 || (unsigned)frames>4414-proof->frames){proof->overflow=true;return;}
+    memcpy(proof->samples+proof->frames*2,samples,(size_t)frames*2*sizeof(short));
+    proof->frames+=(unsigned)frames;
+}
+
+static void capture_test_voice(void) {
+    spu_reset_quiet();
+    Psyz_SpuMemWrite(kSampleAddr,kAdpcmSine,sizeof(kAdpcmSine));
+    Psyz_SpuWrite(0x1AA,0xC000);
+    Psyz_SpuWrite(0x180,0x3FFF);Psyz_SpuWrite(0x182,0x3FFF);
+    spu_voice1_keyon(kSampleAddr,0x1000);
+    Psyz_SpuWrite(0x10,0x3FFF);Psyz_SpuWrite(0x12,0x2000);
+}
+#endif
+
+ZTEST(audio_capture, video_clock_observes_existing_pcm_without_advancing_spu) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=SDL_getenv("PSYZ_AUDIO_CLOCK");
+    char* saved=clock?SDL_strdup(clock):NULL;
+    Psyz_AudioDestroy();
+    zassert_s32_eq(1,SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK","video",true));
+    zassert_s32_eq(0,Psyz_AudioInit());
+    static short expected[4414*2],expected_tail[96*2],tail[96*2];
+    static AudioCaptureProof proof;
+    memset(&proof,0,sizeof(proof));
+    capture_test_voice();Psyz_SpuPullSamples(expected,4414);Psyz_SpuPullSamples(expected_tail,96);
+    unsigned nonzero=0;
+    for(unsigned i=0;i<4414*2;++i)if(expected[i])++nonzero;
+    zassert_s32_eq(1,nonzero>0);
+    capture_test_voice();Psyz_AudioSetCaptureCallback(capture_playback_pcm,&proof);
+    Psyz_AudioPause();Sdl3Audio_VBlank(false);zassert_u32_eq(0,proof.calls);
+    Psyz_AudioUnpause();
+    for(unsigned i=0;i<6;++i)Sdl3Audio_VBlank(false);
+    zassert_u32_eq(6,proof.calls);zassert_u32_eq(4414,proof.frames);zassert_s32_eq(0,proof.overflow);
+    zassert_s32_eq(0,memcmp(expected,proof.samples,sizeof(expected)));
+    Psyz_AudioPause();Sdl3Audio_VBlank(false);zassert_u32_eq(6,proof.calls);
+    Psyz_SpuPullSamples(tail,96);
+    zassert_s32_eq(0,memcmp(expected_tail,tail,sizeof(tail)));zassert_u32_eq(6,proof.calls);
+    Psyz_AudioSetCaptureCallback(NULL,NULL);Psyz_AudioUnpause();Sdl3Audio_VBlank(false);
+    zassert_u32_eq(6,proof.calls);
+    Psyz_AudioSetCaptureCallback(capture_playback_pcm,&proof);
+    Psyz_AudioDestroy();zassert_s32_eq(0,Psyz_AudioInit());Sdl3Audio_VBlank(false);
+    zassert_u32_eq(6,proof.calls);
+    Psyz_AudioDestroy();
+    if(saved){SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK",saved,true);SDL_free(saved);}
+    else SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK");
+    zassert_s32_eq(0,Psyz_AudioInit());
+#endif
+}
+
+ZTEST(audio_capture, device_callback_observes_pcm_and_detaches) {
+    zskip_targets("ps1;psp");
+#if defined(__psyz) && !defined(__PSP__)
+    const char* clock=SDL_getenv("PSYZ_AUDIO_CLOCK");
+    char* saved=clock?SDL_strdup(clock):NULL;
+    Psyz_AudioDestroy();SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK");
+    zassert_s32_eq(0,Psyz_AudioInit());Psyz_AudioPause();Psyz_AudioLock();
+    static short expected[4414*2];static AudioCaptureProof proof;
+    memset(&proof,0,sizeof(proof));
+    capture_test_voice();Psyz_SpuPullSamples(expected,4414);capture_test_voice();
+    Psyz_AudioSetCaptureCallback(capture_playback_pcm,&proof);
+    Psyz_AudioUnlock();Psyz_AudioUnpause();
+    for(unsigned wait=0;wait<200;++wait){
+        SDL_Delay(5);Psyz_AudioLock();unsigned frames=proof.frames;Psyz_AudioUnlock();
+        if(frames)break;
+    }
+    Psyz_AudioSetCaptureCallback(NULL,NULL);
+    zassert_s32_eq(1,proof.frames>0);zassert_s32_eq(1,proof.frames<=4414);
+    zassert_s32_eq(0,memcmp(expected,proof.samples,(size_t)proof.frames*2*sizeof(short)));
+    unsigned calls=proof.calls;SDL_Delay(20);zassert_u32_eq(calls,proof.calls);
+    Psyz_AudioDestroy();
+    if(saved){SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK",saved,true);SDL_free(saved);}
+    else SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK");
+    zassert_s32_eq(0,Psyz_AudioInit());
+#endif
+}

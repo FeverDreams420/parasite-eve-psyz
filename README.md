@@ -199,3 +199,14 @@ advancement, callback counts and an already-elapsed interval. Metal runtime
 passes with libapi.c and sdl3_gpu.c instrumented by ASan/UBSan/function. Hardware
 scanline precision and autonomous blank interrupts while no synchronization
 call is executing are not established by these checks.
+
+### Observing playback audio
+
+`Psyz_AudioSetCaptureCallback` observes the existing mixed 44100 Hz stereo
+signed-16-bit playback frames in host byte order, without another SPU pull.
+It also works with `PSYZ_AUDIO_CLOCK=video`. The callback runs under the audio
+lock; copy/consume its temporary buffer without modifying it or calling
+Audio/SPU APIs. Detach with a NULL callback before releasing its userdata.
+`Psyz_AudioDestroy` clears registration. Direct `Psyz_SpuPullSamples` calls
+bypass the observer. This captures emulator output; it is not a hardware
+accuracy oracle.
