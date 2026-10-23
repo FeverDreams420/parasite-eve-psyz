@@ -8,6 +8,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <limits.h>
+#include <math.h>
 #include <kernel.h>
 #include "../internal.h"
 #include "../../decomp/src/libspu/libspu_private.h"
@@ -668,7 +669,9 @@ static short hermite4(
     float c2 =
         (float)ym1 - 2.5f * (float)y0 + 2.0f * (float)y1 - 0.5f * (float)y2;
     float c3 = 0.5f * (float)(y2 - ym1) + 1.5f * (float)(y0 - y1);
-    float v = ((c3 * x + c2) * x + c1) * x + c0;
+    /* Contract each Horner stage explicitly: GCC and Clang otherwise choose
+     * different multiply/add contractions near half-sample boundaries. */
+    float v = fmaf(fmaf(fmaf(c3, x, c2), x, c1), x, c0);
     int iv = (int)(v + (v >= 0 ? 0.5f : -0.5f));
     return clamp16(iv);
 }

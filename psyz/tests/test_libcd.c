@@ -1108,3 +1108,40 @@ ZTEST(libcd_playback, xa_filtered_stream_ends_in_silence) {
         zassert_s16_eq(0, out[i * 2 + 1]);
     }
 }
+
+
+ZTEST(libcd_playback, xa_resampler_rounding) {
+    enum { sectors = 32, frames = sectors * 2352 };
+    unsigned char *raw = test_calloc(sectors, SECTOR_SIZE);
+    short *out = test_calloc(frames * 2, sizeof(short));
+    unsigned seed = 0x4e415843u;
+    for (int i = 0; i < sectors; ++i) {
+        build_xa_sector(raw + i * SECTOR_SIZE, i);
+        for (int group = 0; group < 18; ++group) {
+            unsigned char *block = raw + i * SECTOR_SIZE + 24 + group * 128;
+            for (int byte = 16; byte < 128; ++byte) {
+                seed = seed * 1664525u + 1013904223u;
+                block[byte] = (unsigned char)(seed >> 24);
+            }
+        }
+    }
+    mount_bin_cue_pair((unsigned short *)raw, sectors * SECTOR_SIZE / 2, "MODE2/2352");
+    CdReset(1);Psyz_AudioPause();
+    u_char mode = CdlModeSpeed | CdlModeRT | CdlModeSF, filter[2] = {1, 0};
+    CdControlB(CdlSetmode, &mode, NULL);CdControlB(CdlSetfilter, filter, NULL);
+    CdlLOC loc;CdIntToPos(0, &loc);CdControlB(CdlSetloc, (u_char *)&loc, NULL);
+    CdControlB(CdlReadN, NULL, NULL);
+    size_t count = Psyz_CdPullSamples(out, frames);
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t i = 0; i < count * 2; ++i) {
+        unsigned sample = (unsigned short)out[i];
+        hash = (hash ^ (sample & 255u)) * UINT64_C(1099511628211);
+        hash = (hash ^ (sample >> 8)) * UINT64_C(1099511628211);
+    }
+    zprintf("XA varying-wave PCM frames %zu hash %08x%08x\n", count,
+        (unsigned)(hash >> 32), (unsigned)hash);
+    zexpect_s32_eq(frames, count);
+    zexpect_u32_eq(0xc1a616c2u, (unsigned)(hash >> 32));
+    zexpect_u32_eq(0xd17dd80au, (unsigned)hash);
+    CdControlB(CdlStop, NULL, NULL);
+}
