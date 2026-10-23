@@ -232,6 +232,19 @@ int Psyz_VideoStats(PsyzVideoStats* stats);
 unsigned char* Psyz_VideoAllocCapturedFrame(int* w, int* h);
 
 /**
+ * @brief Capture the rendered display before window scaling as RGB888.
+ *
+ * Includes internal-resolution detail for RGB555 GPU output. RGB24 movies
+ * and platforms without internal scaling retain their native dimensions.
+ * Does not change the dimensions or behavior of AllocCapturedFrame.
+ *
+ * @param w Required output width (zero on failure)
+ * @param h Required output height (zero on failure)
+ * @return NULL on failure, or a buffer to release with free(ptr)
+ */
+unsigned char* Psyz_VideoAllocRenderedFrame(int* w, int* h);
+
+/**
  * @brief Dump the whole video memory plane as RGB888
  *
  * @param w Output VRAM width

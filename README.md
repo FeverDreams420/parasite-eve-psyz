@@ -30,9 +30,13 @@ swapchain presentation and frame limiting. This permits internal-resolution
 tests on systems where the SDL `offscreen` video driver cannot create a GPU
 device. It still requires a working native video driver and GPU.
 
-The GPU mode uses the existing rendering and readback APIs; captured frames
-and `StoreImage` retain their native-resolution dimensions. Selecting this
-mode alone does not verify high-resolution image detail or gameplay parity.
+The legacy `Psyz_VideoAllocCapturedFrame` API and `StoreImage` retain native
+resolution. `Psyz_VideoAllocRenderedFrame` returns RGB888 pixels from the
+rendered display region before window/aspect scaling, including internal
+resolution detail. Free the returned allocation with `free`. RGB24 movies,
+software rendering, and PSP retain native dimensions. Both dimension pointers
+are required; failure returns NULL and clears valid output dimensions.
+Selecting GPU mode alone does not verify image detail or gameplay parity.
 The SDL3 GPU renderer draws native VRAM independently of the scaled target,
 so texture feedback and readback retain native sampling. Polygon attribute
 planes use signed 12-bit fractional gradients and the original half-unit

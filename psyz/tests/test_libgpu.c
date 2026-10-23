@@ -207,6 +207,63 @@ ZTEST(gpu, rotated_triangle_samples_signed_affine_uv) {
     }
 }
 
+ZTEST(gpu, rendered_capture_contains_internal_detail) {
+    zskip_targets("psp;ps1");
+#if defined(__psyz) && !defined(__PSP__)
+    int w=7,h=9;
+    zassert_ptr_eq(NULL,Psyz_VideoAllocRenderedFrame(NULL,&h));
+    zassert_s32_eq(0,h);
+    zassert_ptr_eq(NULL,Psyz_VideoAllocRenderedFrame(&w,NULL));
+    zassert_s32_eq(0,w);
+    const char* headless=getenv("PSYZ_HEADLESS");
+    unsigned count=headless && !strcmp(headless,"1")?1:4;
+    const unsigned scales[4]={1,2,3,8};
+    static u16 before[320*280],after[320*280];
+    RECT check={0,0,320,280};
+    DISPENV display;SetDefDispEnv(&display,16,24,256,240);PutDispEnv(&display);
+    for(unsigned item=0;item<count;++item) {
+        unsigned scale=scales[item];
+        zassert_s32_eq(0,Psyz_VideoSetInternalResolution(scale));
+        ClearImage(&check,0,0,0);
+        POLY_F3 triangle={0};setPolyF3(&triangle);setRGB0(&triangle,255,255,255);
+        setXY3(&triangle,20,28,70,37,29,65);DrawPrim(&triangle);
+        u8* rendered=Psyz_VideoAllocRenderedFrame(&w,&h);
+        zassert_ptr_ne(NULL,rendered);zassert_s32_eq(256*scale,w);zassert_s32_eq(240*scale,h);
+        StoreImage(&check,(u_long*)before);DrawSync(0);
+        int nw,nh;u8* native=Psyz_VideoAllocCapturedFrame(&nw,&nh);
+        zassert_ptr_ne(NULL,native);zassert_s32_eq(256,nw);zassert_s32_eq(240,nh);
+        unsigned detail=0;
+        for(int y=0;y<h;++y)for(int x=0;x<w;++x)
+            if(memcmp(rendered+((size_t)y*w+x)*3,
+                      native+((size_t)(y/scale)*nw+x/scale)*3,3))++detail;
+        if(scale==1)zassert_s32_eq(0,detail);
+        else zassert_s32_eq(1,detail>0);
+        for(unsigned c=0;c<3;++c) {
+            zassert_u8_eq(255,rendered[((size_t)(16*scale+scale/2)*w+19*scale+scale/2)*3+c]);
+            zassert_u8_eq(0,rendered[((size_t)(180*scale)*w+200*scale)*3+c]);
+        }
+        int rw,rh;u8* repeated=Psyz_VideoAllocRenderedFrame(&rw,&rh);
+        zassert_ptr_ne(NULL,repeated);zassert_s32_eq(w,rw);zassert_s32_eq(h,rh);
+        zassert_s32_eq(0,memcmp(rendered,repeated,(size_t)w*h*3));
+        StoreImage(&check,(u_long*)after);DrawSync(0);
+        zassert_s32_eq(0,memcmp(before,after,sizeof(before)));
+        printf("Rendered capture %ux: %dx%d, %u subpixel edge samples, native VRAM preserved\n",scale,w,h,detail);
+        free(native);free(rendered);free(repeated);
+    }
+    display.isrgb24=1;PutDispEnv(&display);
+    int nw,nh;u8* native=Psyz_VideoAllocCapturedFrame(&nw,&nh);
+    u8* rendered=Psyz_VideoAllocRenderedFrame(&w,&h);
+    zassert_ptr_ne(NULL,native);zassert_ptr_ne(NULL,rendered);
+    zassert_s32_eq(nw,w);zassert_s32_eq(nh,h);
+    zassert_s32_eq(0,memcmp(native,rendered,(size_t)w*h*3));
+    free(native);free(rendered);
+    display.isrgb24=0;PutDispEnv(&display);Psyz_VideoSetInternalResolution(1);
+    SetDefDispEnv(&display,1010,500,256,240);PutDispEnv(&display);
+    w=h=7;zassert_ptr_eq(NULL,Psyz_VideoAllocRenderedFrame(&w,&h));
+    zassert_s32_eq(0,w);zassert_s32_eq(0,h);
+#endif
+}
+
 ZTEST(gpu, thin_triangle_integer_attribute_boundary) {
     static u16 texels[256*128];
     for(unsigned y=0;y<128;++y)for(unsigned x=0;x<256;++x)

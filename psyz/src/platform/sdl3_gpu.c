@@ -160,17 +160,17 @@ static void ReleaseFrameFences(void) {
     }
 }
 
-static void SubmitCmdAndWait(void) {
+static bool SubmitCmdAndWait(void) {
     if (!pending_cmd) {
-        return;
+        return true;
     }
     SDL_GPUFence* fence =
         SDL_SubmitGPUCommandBufferAndAcquireFence(pending_cmd);
     pending_cmd = NULL;
-    if (fence) {
-        SDL_WaitForGPUFences(device, true, &fence, 1);
-        SDL_ReleaseGPUFence(device, fence);
-    }
+    if (!fence) return false;
+    bool completed=SDL_WaitForGPUFences(device, true, &fence, 1);
+    SDL_ReleaseGPUFence(device, fence);
+    return completed;
 }
 
 static SDL_GPUShader* CreateShader(
@@ -1012,6 +1012,57 @@ unsigned char* Psyz_VideoAllocVramDump(int* w, int* h) {
     *w = VRAM_W;
     *h = VRAM_H;
     return AllocRgb888Region(0, 0, VRAM_W, VRAM_H);
+}
+
+unsigned char* Psyz_VideoAllocRenderedFrame(int* w, int* h) {
+    if (w) *w=0;
+    if (h) *h=0;
+    if (!w || !h) return NULL;
+    if (!InitPlatform()) return NULL;
+    Draw_FlushBuffer();
+    if (!UseSoftwareBackend()) ApplyPendingInternalRes();
+    if (UseSoftwareBackend() || display_rgb24 || internal_res==1) {
+        unsigned char* pixels=Psyz_VideoAllocCapturedFrame(w,h);
+        if (!pixels) *w=*h=0;
+        return pixels;
+    }
+    if (!scaled_vram_render || display_area.x<0 || display_area.y<0 ||
+        display_size.x<=0 || display_size.y<=0 ||
+        display_area.x>VRAM_W-display_size.x ||
+        display_area.y>VRAM_H-display_size.y) return NULL;
+    unsigned width=(unsigned)display_size.x*internal_res;
+    unsigned height=(unsigned)display_size.y*internal_res;
+    size_t count=(size_t)width*height;
+    unsigned char* pixels=malloc(count*3);
+    SDL_GPUTransferBufferCreateInfo info={
+        .usage=SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,.size=(Uint32)(count*4)};
+    SDL_GPUTransferBuffer* transfer=SDL_CreateGPUTransferBuffer(device,&info);
+    if (!pixels || !transfer) {
+        free(pixels);
+        if (transfer) SDL_ReleaseGPUTransferBuffer(device,transfer);
+        return NULL;
+    }
+    SDL_GPUCommandBuffer* cmd=AcquireCmd();
+    if (!cmd) {free(pixels);SDL_ReleaseGPUTransferBuffer(device,transfer);return NULL;}
+    SDL_GPUCopyPass* copy=SDL_BeginGPUCopyPass(cmd);
+    if (!copy) {free(pixels);SDL_ReleaseGPUTransferBuffer(device,transfer);return NULL;}
+    SDL_GPUTextureRegion region={.texture=scaled_vram_render,
+        .x=(Uint32)display_area.x*internal_res,.y=(Uint32)display_area.y*internal_res,
+        .w=width,.h=height,.d=1};
+    SDL_GPUTextureTransferInfo destination={.transfer_buffer=transfer};
+    SDL_DownloadFromGPUTexture(copy,&region,&destination);
+    SDL_EndGPUCopyPass(copy);
+    if (!SubmitCmdAndWait()) {
+        free(pixels);SDL_ReleaseGPUTransferBuffer(device,transfer);return NULL;
+    }
+    const u8* rgba=SDL_MapGPUTransferBuffer(device,transfer,false);
+    if (rgba) {
+        for (size_t i=0;i<count;++i) memcpy(pixels+i*3,rgba+i*4,3);
+        SDL_UnmapGPUTransferBuffer(device,transfer);
+        *w=(int)width;*h=(int)height;
+    } else {free(pixels);pixels=NULL;}
+    SDL_ReleaseGPUTransferBuffer(device,transfer);
+    return pixels;
 }
 
 static void UpdateScissor() {

@@ -717,8 +717,8 @@ void ResetPlatform(void) {
     QuitPlatform();
 }
 
-static unsigned char* AllocRgb888Region(int x, int y, int w, int h) {
-    if (vram_fbo == 0) {
+static unsigned char* AllocRgb888FboRegion(GLuint fbo,int x, int y, int w, int h) {
+    if (fbo == 0) {
         ERRORF("FBO not initialized");
         return NULL;
     }
@@ -731,7 +731,7 @@ static unsigned char* AllocRgb888Region(int x, int y, int w, int h) {
     while (glGetError() != GL_NO_ERROR) {
     }
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, vram_fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
 
     size_t count = (size_t)w * h;
     u8* rgba = GetVramConvertBuffer(count * 4);
@@ -761,13 +761,41 @@ unsigned char* Psyz_VideoAllocCapturedFrame(int* w, int* h) {
     *w = display_size.x;
     *h = display_size.y;
     if (display_rgb24) return Sdl3Common_ReadRgb24(display_area.x, display_area.y, *w, *h);
-    return AllocRgb888Region(display_area.x, display_area.y, *w, *h);
+    return AllocRgb888FboRegion(vram_fbo,display_area.x, display_area.y, *w, *h);
 }
 
 unsigned char* Psyz_VideoAllocVramDump(int* w, int* h) {
     *w = VRAM_W;
     *h = VRAM_H;
-    return AllocRgb888Region(0, 0, VRAM_W, VRAM_H);
+    return AllocRgb888FboRegion(vram_fbo,0, 0, VRAM_W, VRAM_H);
+}
+
+unsigned char* Psyz_VideoAllocRenderedFrame(int* w,int* h) {
+    if (w) *w=0;
+    if (h) *h=0;
+    if (!w || !h) return NULL;
+    if (!InitPlatform()) return NULL;
+    Draw_FlushBuffer();ApplyPendingInternalRes();
+    if (!display_rgb24 && (display_area.x<0 || display_area.y<0 ||
+        display_size.x<=0 || display_size.y<=0 ||
+        display_area.x>VRAM_W-display_size.x || display_area.y>VRAM_H-display_size.y))
+        return NULL;
+    if (display_rgb24 || internal_res==1) {
+        unsigned char* pixels=Psyz_VideoAllocCapturedFrame(w,h);
+        if (!pixels) *w=*h=0;
+        return pixels;
+    }
+    if (!scaled_vram_fbo || display_area.x<0 || display_area.y<0 ||
+        display_size.x<=0 || display_size.y<=0 ||
+        display_area.x>VRAM_W-display_size.x || display_area.y>VRAM_H-display_size.y)
+        return NULL;
+    GLint read_fbo;glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&read_fbo);
+    unsigned char* pixels=AllocRgb888FboRegion(scaled_vram_fbo,
+        display_area.x*internal_res,display_area.y*internal_res,
+        display_size.x*internal_res,display_size.y*internal_res);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,(GLuint)read_fbo);
+    if (pixels) {*w=display_size.x*internal_res;*h=display_size.y*internal_res;}
+    return pixels;
 }
 
 unsigned Psyz_VideoGetInternalResolution(void) { return internal_res; }

@@ -1059,6 +1059,15 @@ unsigned char* Psyz_VideoAllocCapturedFrame(int* w, int* h) {
     return out;
 }
 
+unsigned char* Psyz_VideoAllocRenderedFrame(int* w,int* h) {
+    if (w) *w=0;
+    if (h) *h=0;
+    if (!w || !h) return NULL;
+    unsigned char* pixels=Psyz_VideoAllocCapturedFrame(w,h);
+    if (!pixels) *w=*h=0;
+    return pixels;
+}
+
 unsigned char* Psyz_VideoAllocVramDump(int* w, int* h) {
     // TODO feasibility of returning the edram pointer directly?
     if (!is_init && !InitPlatform()) {
