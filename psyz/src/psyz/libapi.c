@@ -73,7 +73,12 @@ int VSync(int mode) {
             Psyz_KernelVBlank();
         }
     } while ((int32_t)(now - target) < 0);
-    last_vsync_count = (unsigned int)Psyz_VideoVSync(-1);
+    /* Keep periodic waits on their scheduled blank. Native presentation can
+     * return just after it; using that late return as the next origin adds a
+     * blank repeatedly and lets FMV pictures drift behind device audio.
+     * A whole missed interval resynchronizes rather than replaying a stall. */
+    last_vsync_count = mode > 1 && now - target < (unsigned int)mode
+        ? target : now;
     return elapsed;
 }
 

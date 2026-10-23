@@ -205,6 +205,8 @@ PsyzAspectMode Psyz_VideoGetAspectMode(void) { return aspect_mode; }
 
 static Uint32 last_vsync_us = 0; // time of the last blocking Psyz_VideoVSync
 static Uint32 vblank_clock_offset;
+static unsigned host_clock_pause_depth;
+static Uint32 host_clock_pause_count;
 static Uint32 limitless_vblank_base;
 static Uint64 limitless_frame_base;
 
@@ -494,6 +496,7 @@ int Psyz_VideoVSync(int mode) {
     unsigned short ret;
     Sdl3Common_ApplyPendingTimingReset();
     if (mode < 0) {
+        if(host_clock_pause_depth)return (int)host_clock_pause_count;
         /* With pacing disabled, each explicit present advances one blank.
          * Wall time cannot drive this counter in an accelerated runner. */
         if (vsync_mode == PSYZ_VSYNC_LIMITLESS)
@@ -511,6 +514,25 @@ int Psyz_VideoVSync(int mode) {
         last_vsync_us = (Uint32)(SDL_GetTicksNS() / 1000);
     }
     return ret;
+}
+
+void Psyz_PauseHostClock_SDL3(bool paused) {
+    if(paused){
+        if(!host_clock_pause_depth)host_clock_pause_count=(Uint32)Psyz_VideoVSync(-1);
+        ++host_clock_pause_depth;
+    }else if(host_clock_pause_depth && !--host_clock_pause_depth){
+        if(vsync_mode==PSYZ_VSYNC_LIMITLESS){
+            limitless_vblank_base=host_clock_pause_count;
+            limitless_frame_base=gpu_stats.total_frames;
+        }else{
+            Uint32 wall=(Uint32)((double)SDL_GetTicksNS()*target_frame_rate/1e9);
+            vblank_clock_offset=host_clock_pause_count-wall;
+        }
+        drift_compensation=0.0;
+        last_frame_time=SDL_GetPerformanceCounter();
+        finish_time=last_frame_time;
+        last_vsync_us=(Uint32)(SDL_GetTicksNS()/1000);
+    }
 }
 
 int Psyz_VideoSetVsyncMode(PsyzVsyncMode mode) {
@@ -849,7 +871,7 @@ void Psyz_PadsPoll(void) {
 }
 
 #ifndef PLATFORM_IOS
-// Prefers exclusive fullscreen mode, fallback on borderless fullscreen
+// Desktop fullscreen keeps the user display mode and refresh rate unchanged.
 static void SetFullScreen(bool isFullscreen) {
     if (!sdl3_window) {
         return;
@@ -859,28 +881,17 @@ static void SetFullScreen(bool isFullscreen) {
     }
     is_fullscreen = isFullscreen;
     if (is_fullscreen) {
-        SDL_DisplayID display_id = SDL_GetDisplayForWindow(sdl3_window);
-        if (!display_id) {
-            display_id = SDL_GetPrimaryDisplay();
+        if (!SDL_SetWindowFullscreenMode(sdl3_window, NULL)) {
+            WARNF("failed to select desktop fullscreen: %s", SDL_GetError());
+            is_fullscreen = false;
+            return;
         }
-        SDL_DisplayMode* mode = NULL;
-        SDL_DisplayMode closest;
-        const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(display_id);
-        if (desktop) {
-            if (SDL_GetClosestFullscreenDisplayMode(
-                    display_id, desktop->w, desktop->h, desktop->refresh_rate,
-                    false, &closest)) {
-                mode = &closest;
-            }
-        }
-        SDL_SetWindowFullscreenMode(sdl3_window, mode);
         if (!SDL_SetWindowFullscreen(sdl3_window, true)) {
             WARNF("failed to enter fullscreen: %s", SDL_GetError());
             is_fullscreen = false;
             return;
         }
-        INFOF(
-            "entered %s fullscreen", mode ? "exclusive" : "borderless desktop");
+        INFOF("entered borderless desktop fullscreen");
     } else {
         SDL_SetWindowFullscreen(sdl3_window, false);
         INFOF("returned to windowed mode");

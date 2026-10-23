@@ -18,6 +18,9 @@ PsyzOverlayEventCB_SDL3 Psyz_OverlayEvent_SDL3(PsyzOverlayEventCB_SDL3 cb);
  * for events owned by a modal settings panel (including Escape). */
 typedef bool (*PsyzOverlayEventFilter_SDL3)(const SDL_Event* event);
 PsyzOverlayEventFilter_SDL3 Psyz_SetOverlayEventFilter_SDL3(PsyzOverlayEventFilter_SDL3 filter);
+/* Nested host modal UI suspends the emulated VBlank clock, including time
+ * spent in native file dialogs. Does not pause audio or render extra frames. */
+void Psyz_PauseHostClock_SDL3(bool paused);
 /* Borrowed main window, NULL before platform initialization. */
 SDL_Window *Psyz_GetWindow_SDL3(void);
 /* Shares fullscreen state with the SDK F4 shortcut. */
