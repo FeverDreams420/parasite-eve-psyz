@@ -70,6 +70,8 @@ static SDL_GPUTexture* rgb24_display = NULL;
 static bool display_rgb24;
 static bool display_double_height;
 static SDL_GPUTexture* vram_sample = NULL;
+static SDL_GPUTexture* blend_sample = NULL;
+static SDL_GPUTexture* scaled_blend_sample = NULL;
 static SDL_GPUSampler* vram_sampler = NULL;
 static SDL_GPUTexture* scaled_vram_render = NULL;
 static unsigned internal_res = 1;
@@ -364,7 +366,8 @@ static bool CreateGpuResources(void) {
     SDL_GPUTextureCreateInfo sample_info = render_info;
     sample_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     vram_sample = SDL_CreateGPUTexture(device, &sample_info);
-    if (!vram_render || !vram_sample) {
+    blend_sample = SDL_CreateGPUTexture(device, &sample_info);
+    if (!vram_render || !vram_sample || !blend_sample) {
         ERRORF("SDL_CreateGPUTexture: %s", SDL_GetError());
         return false;
     }
@@ -427,7 +430,7 @@ static bool CreateGpuResources(void) {
     SDL_GPUShader* psx_vs =
         CreateShader(psx_vert, psx_vert_len, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
     SDL_GPUShader* psx_fs = CreateShader(
-        psx_frag, psx_frag_len, SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+        psx_frag, psx_frag_len, SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     SDL_GPUShader* clear_vs = CreateShader(
         clear_vert, clear_vert_len, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* clear_fs = CreateShader(
@@ -615,6 +618,10 @@ static void SyncNativeVramToScaled(int x, int y, int w, int h) {
 }
 
 static bool CreateScaledVramTarget(unsigned n) {
+    if (scaled_blend_sample) {
+        SDL_ReleaseGPUTexture(device, scaled_blend_sample);
+        scaled_blend_sample = NULL;
+    }
     if (scaled_vram_render) {
         SDL_ReleaseGPUTexture(device, scaled_vram_render);
         scaled_vram_render = NULL;
@@ -630,9 +637,15 @@ static bool CreateScaledVramTarget(unsigned n) {
         .num_levels = 1,
     };
     scaled_vram_render = SDL_CreateGPUTexture(device, &info);
-    if (!scaled_vram_render) {
+    SDL_GPUTextureCreateInfo sample_info=info;
+    sample_info.usage=SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    scaled_blend_sample=SDL_CreateGPUTexture(device,&sample_info);
+    if (!scaled_vram_render || !scaled_blend_sample) {
         ERRORF(
             "scaled VRAM texture creation failed (%dx): %s", n, SDL_GetError());
+        if (scaled_vram_render) SDL_ReleaseGPUTexture(device,scaled_vram_render);
+        if (scaled_blend_sample) SDL_ReleaseGPUTexture(device,scaled_blend_sample);
+        scaled_vram_render=scaled_blend_sample=NULL;
         return false;
     }
     return true;
@@ -687,6 +700,10 @@ static void ApplyPendingInternalRes(void) {
     } else if (scaled_vram_render) {
         SDL_ReleaseGPUTexture(device, scaled_vram_render);
         scaled_vram_render = NULL;
+        if (scaled_blend_sample) {
+            SDL_ReleaseGPUTexture(device,scaled_blend_sample);
+            scaled_blend_sample=NULL;
+        }
     }
     internal_res = n;
     UpdateScissor();
@@ -846,6 +863,14 @@ static void QuitPlatform(void) {
         if (vram_sample) {
             SDL_ReleaseGPUTexture(device, vram_sample);
             vram_sample = NULL;
+        }
+        if (blend_sample) {
+            SDL_ReleaseGPUTexture(device,blend_sample);
+            blend_sample=NULL;
+        }
+        if (scaled_blend_sample) {
+            SDL_ReleaseGPUTexture(device,scaled_blend_sample);
+            scaled_blend_sample=NULL;
         }
         if (scaled_vram_render) {
             SDL_ReleaseGPUTexture(device, scaled_vram_render);
@@ -1730,83 +1755,90 @@ void Draw_FlushBuffer(void) {
     for (unsigned target_index=0; target_index<(internal_res>1 ? 2u : 1u);
          ++target_index) {
         unsigned target_scale=target_index ? internal_res : 1;
-        const SDL_GPUColorTargetInfo target = {
-            .texture = target_index ? scaled_vram_render : vram_render,
-            .load_op = SDL_GPU_LOADOP_LOAD,
-            .store_op = SDL_GPU_STOREOP_STORE,
-        };
-        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, NULL);
-        {
-            const float grid_scale_x = GetDrawGridXScale();
-            const float render_scale = (float)target_scale;
-            const SDL_GPUViewport grid_viewport = {
-                .x = (float)draw_offset.x * render_scale * (1.0f - grid_scale_x),
-                .y = 0.0f,
-                .w = (float)VRAM_W * render_scale * grid_scale_x,
-                .h = (float)VRAM_H * render_scale,
-                .min_depth = 0.0f,
-                .max_depth = 1.0f,
+        SDL_GPUTexture* destination_sample=target_index ? scaled_blend_sample : blend_sample;
+        int start=0;
+        while (start<n_indices) {
+            bool semi=vertex_buf[index_buf[start]].a==0x80;
+            int end=start+3;
+            if (!semi) while (end<n_indices && vertex_buf[index_buf[end]].a!=0x80) end+=3;
+            if (semi) {
+                int x0=(scissor_rect.x+scissor_rect.w)*(int)target_scale;
+                int y0=(scissor_rect.y+scissor_rect.h)*(int)target_scale;
+                int x1=scissor_rect.x*(int)target_scale;
+                int y1=scissor_rect.y*(int)target_scale;
+                for (int i=start;i<end;++i) {
+                    const Vertex* v=&vertex_buf[index_buf[i]];
+                    float bias=(v->t&TPAGE_POLYGON)?0.5f:0.0f;
+                    float x=(draw_offset.x+(v->x+bias)*GetDrawGridXScale())*target_scale;
+                    float y=(draw_offset.y+v->y+bias)*target_scale;
+                    x0=SDL_min(x0,(int)SDL_floorf(x)-1);x1=SDL_max(x1,(int)SDL_ceilf(x)+1);
+                    y0=SDL_min(y0,(int)SDL_floorf(y)-1);y1=SDL_max(y1,(int)SDL_ceilf(y)+1);
+                }
+                x0=SDL_max(x0,SDL_max(0,scissor_rect.x)*(int)target_scale);
+                y0=SDL_max(y0,SDL_max(0,scissor_rect.y)*(int)target_scale);
+                x1=SDL_min(x1,SDL_min(VRAM_W,scissor_rect.x+scissor_rect.w)*(int)target_scale);
+                y1=SDL_min(y1,SDL_min(VRAM_H,scissor_rect.y+scissor_rect.h)*(int)target_scale);
+                if (x1<=x0 || y1<=y0) {start=end;continue;}
+                SDL_GPUCopyPass* blend_copy=SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureLocation from={.texture=target_index ? scaled_vram_render : vram_render,
+                    .x=(Uint32)x0,.y=(Uint32)y0};
+                SDL_GPUTextureLocation to=from;to.texture=destination_sample;
+                SDL_CopyGPUTextureToTexture(blend_copy,&from,&to,
+                    (Uint32)(x1-x0),(Uint32)(y1-y0),1,false);
+                SDL_EndGPUCopyPass(blend_copy);
+            }
+            const SDL_GPUColorTargetInfo target = {
+                .texture = target_index ? scaled_vram_render : vram_render,
+                .load_op = SDL_GPU_LOADOP_LOAD,
+                .store_op = SDL_GPU_STOREOP_STORE,
             };
-            SDL_SetGPUViewport(pass, &grid_viewport);
-        }
-        SDL_Rect scaled_scissor = {
-            scissor_rect.x * (int)target_scale, scissor_rect.y * (int)target_scale,
-            scissor_rect.w * (int)target_scale, scissor_rect.h * (int)target_scale};
-        SDL_SetGPUScissor(pass, &scaled_scissor);
-        const SDL_GPUBufferBinding vb = {.buffer = vbuf};
-        SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-        const SDL_GPUBufferBinding ib = {.buffer = ibuf};
-        SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-        const SDL_GPUTextureSamplerBinding sampler_binding = {
-            .texture = vram_sample, .sampler = vram_sampler};
-        SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
-        const float offset_ubo[4] = {
-            (float)draw_offset.x, (float)draw_offset.y, 0, 0};
-        SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
-        const u32 color_pass[4]={0,0,0,0};
-        SDL_PushGPUFragmentUniformData(cmd,0,color_pass,sizeof(color_pass));
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, NULL);
+            {
+                const float grid_scale_x = GetDrawGridXScale();
+                const float render_scale = (float)target_scale;
+                const SDL_GPUViewport grid_viewport = {
+                    .x = (float)draw_offset.x * render_scale * (1.0f - grid_scale_x),
+                    .y = 0.0f,
+                    .w = (float)VRAM_W * render_scale * grid_scale_x,
+                    .h = (float)VRAM_H * render_scale,
+                    .min_depth = 0.0f,
+                    .max_depth = 1.0f,
+                };
+                SDL_SetGPUViewport(pass, &grid_viewport);
+            }
+            SDL_Rect scaled_scissor = {
+                scissor_rect.x * (int)target_scale, scissor_rect.y * (int)target_scale,
+                scissor_rect.w * (int)target_scale, scissor_rect.h * (int)target_scale};
+            SDL_SetGPUScissor(pass, &scaled_scissor);
+            const SDL_GPUBufferBinding vb = {.buffer = vbuf};
+            SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+            const SDL_GPUBufferBinding ib = {.buffer = ibuf};
+            SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+            const SDL_GPUTextureSamplerBinding sampler_binding[2] = {
+                {.texture=vram_sample,.sampler=vram_sampler},
+                {.texture=destination_sample,.sampler=vram_sampler}};
+            SDL_BindGPUFragmentSamplers(pass,0,sampler_binding,2);
+            const float offset_ubo[4] = {
+                (float)draw_offset.x, (float)draw_offset.y, 0, 0};
+            SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
+            const u32 color_pass[4]={semi ? 2u : 0u,target_scale,
+                draw_grid_source_width==draw_grid_target_width,0};
+            SDL_PushGPUFragmentUniformData(cmd,0,color_pass,sizeof(color_pass));
 
-        // every primitive (including lines, expanded to quads) is a triangle list
-        const int prim_size = 3;
-        int start = 0;
-        while (start < n_indices) {
-            Vertex* v = &vertex_buf[index_buf[start]];
-            bool need_subtract = is_subtract_abr(v);
-            int end = start + prim_size;
-            while (end < n_indices) {
-                v = &vertex_buf[index_buf[end]];
-                bool next_subtract = is_subtract_abr(v);
-                if (next_subtract != need_subtract) {
-                    break;
-                }
-                end += prim_size;
+            SDL_BindGPUGraphicsPipeline(pass,pipe_tri[semi ? BLEND_DIRECT : BLEND_ADD]);
+            SDL_DrawGPUIndexedPrimitives(pass,(Uint32)(end-start),1,(Uint32)start,0,0);
+            /* Blend factors use source alpha as an operation selector. Write the
+             * actual PS1 mask bit separately, without changing the color result. */
+            if (!semi) {
+                const u32 mask_pass[4]={1,target_scale,
+                    draw_grid_source_width==draw_grid_target_width,0};
+                SDL_PushGPUFragmentUniformData(cmd,0,mask_pass,sizeof(mask_pass));
+                SDL_BindGPUGraphicsPipeline(pass,pipe_tri[BLEND_MASK]);
+                SDL_DrawGPUIndexedPrimitives(pass,(Uint32)(end-start),1,(Uint32)start,0,0);
             }
-            while (need_subtract && start < end) {
-                int group_end = SubtractGroupEnd(start, end);
-                Uint32 count = (Uint32)(group_end - start);
-                SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_SUB]);
-                SDL_DrawGPUIndexedPrimitives(pass, count, 1, (Uint32)start, 0, 0);
-                if (!is_untextured(&vertex_buf[index_buf[start]])) {
-                    SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_SUB_OPAQUE]);
-                    SDL_DrawGPUIndexedPrimitives(
-                        pass, count, 1, (Uint32)start, 0, 0);
-                }
-                start = group_end;
-            }
-            if (start < end) {
-                SDL_BindGPUGraphicsPipeline(pass, pipe_tri[BLEND_ADD]);
-                SDL_DrawGPUIndexedPrimitives(
-                    pass, (Uint32)(end - start), 1, (Uint32)start, 0, 0);
-                start = end;
-            }
+            SDL_EndGPURenderPass(pass);
+            start=end;
         }
-        /* Blend factors use source alpha as an operation selector. Write the
-         * actual PS1 mask bit separately, without changing the color result. */
-        const u32 mask_pass[4]={1,0,0,0};
-        SDL_PushGPUFragmentUniformData(cmd,0,mask_pass,sizeof(mask_pass));
-        SDL_BindGPUGraphicsPipeline(pass,pipe_tri[BLEND_MASK]);
-        SDL_DrawGPUIndexedPrimitives(pass,(Uint32)n_indices,1,0,0,0);
-        SDL_EndGPURenderPass(pass);
     }
     MarkVramDirty(scissor_rect);
     Draw_ResetBuffer();

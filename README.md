@@ -36,7 +36,11 @@ mode alone does not verify high-resolution image detail or gameplay parity.
 The SDL3 GPU renderer draws native VRAM independently of the scaled target,
 so texture feedback and readback retain native sampling. Polygon attribute
 planes use signed 12-bit fractional gradients and the original half-unit
-bias. A separate alpha write retains the texture mask bit after blending.
+bias. Translucent primitives sample the covered destination region and apply
+integer RGB555 blending in draw order, including truncation and saturation.
+Opaque groups retain the texture mask bit through a separate alpha write.
+At native 1:1 sampling, a half-LSB correction on the 12-bit attribute lattice
+prevents floating interpolation from moving exact UV/color boundaries down.
 
 GPU shader headers can be regenerated with
 `sh psyz/src/platform/shaders/build_shaders.sh` using glslangValidator,

@@ -136,6 +136,7 @@ typedef enum {
     BLEND_SUB,
     BLEND_SUB_OPAQUE,
     BLEND_MASK,
+    BLEND_DIRECT,
     BLEND_COUNT,
 } BlendMode;
 

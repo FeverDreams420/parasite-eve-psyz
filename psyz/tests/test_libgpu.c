@@ -207,6 +207,33 @@ ZTEST(gpu, rotated_triangle_samples_signed_affine_uv) {
     }
 }
 
+ZTEST(gpu, thin_triangle_integer_attribute_boundary) {
+    static u16 texels[256*128];
+    for(unsigned y=0;y<128;++y)for(unsigned x=0;x<256;++x)
+        texels[y*256+x]=(x&31)|((y&31)<<5)|(((x+y)&31)<<10)|0x8000;
+    RECT texture={512,0,256,128};LoadImage(&texture,(u_long*)texels);DrawSync(0);
+    POLY_GT3 triangle={0};setPolyGT3(&triangle);
+    setXY3(&triangle,190,88,187,89,187,87);
+    setUV3(&triangle,236,100,246,115,251,100);
+    setRGB0(&triangle,87,87,87);setRGB1(&triangle,107,107,107);
+    setRGB2(&triangle,112,112,112);
+    triangle.tpage=GetTPage(2,0,512,0);
+    DrawPrim(&triangle);DrawSync(0);
+    u16 pixel=0;RECT sample={189,88,1,1};StoreImage(&sample,(u_long*)&pixel);DrawSync(0);
+    /* Signed 12-bit gradients give U=240, V=103 and RGB=95 here.
+     * V and RGB land exactly on integer boundaries, not just nearby. */
+    zexpect_u16_eq(0xc4ab,pixel);
+    setXY3(&triangle,71,29,15,103,27,152);
+    setUV3(&triangle,10,36,10,30,10,77);
+    setRGB0(&triangle,128,128,128);setRGB1(&triangle,128,128,128);
+    setRGB2(&triangle,128,128,128);
+    DrawPrim(&triangle);DrawSync(0);
+    sample=(RECT){37,94,1,1};StoreImage(&sample,(u_long*)&pixel);DrawSync(0);
+    /* V=46+4095/4096 must stay below 47: a whole-LSB or larger
+     * interpolation bias would fix the first case but break this one. */
+    zexpect_u16_eq(0xe1ca,pixel);
+}
+
 ZTEST(gpu, drawprim_packed_sprite_and_native_commands) {
     u16 palette[16] = {0, 0xC210};
     u16 texture = 0x1111;
@@ -706,6 +733,42 @@ ZTEST(gpu, move_image_overlap) {
     VSync(0);
     PutDispEnv(&cdb->disp);
     ASSERT_FRAME("move_image_overlap", 0, 1.0f);
+}
+
+ZTEST(gpu, rgb555_blend_rounding_and_overlap) {
+    enum { width=128, height=32 };
+    static u16 background[width*height],actual[width*height];
+    for (unsigned mode=0;mode<4;++mode)for(unsigned dst=0;dst<32;++dst)
+    for(unsigned src=0;src<32;++src)
+        background[dst*width+mode*32+src]=
+            dst|(((dst*5+3)&31)<<5)|(((dst*7+11)&31)<<10);
+    RECT region={0,0,width,height};
+    LoadImage(&region,(u_long*)background);DrawSync(0);
+    for(unsigned layer=0;layer<2;++layer) {
+        for(unsigned mode=0;mode<4;++mode) {
+            Psyz_GpuWriteGP0(_get_mode(1,0,getTPage(0,mode,0,0)));
+            for(unsigned dst=0;dst<32;++dst)for(unsigned src=0;src<32;++src) {
+                unsigned value=layer?31-src:src;
+                unsigned color[3]={value,(value+7)&31,(value*3+5)&31};
+                POLY_F4 quad={0};setPolyF4(&quad);setSemiTrans(&quad,1);
+                setXYWH(&quad,mode*32+src,dst,1,1);
+                setRGB0(&quad,color[0]*8,color[1]*8,color[2]*8);DrawPrim(&quad);
+                unsigned index=dst*width+mode*32+src,result=0;
+                for(unsigned c=0;c<3;++c) {
+                    int b=(background[index]>>(5*c))&31,f=color[c],v;
+                    if(mode==0)v=(b+f)>>1;
+                    else if(mode==1)v=b+f;
+                    else if(mode==2)v=b-f;
+                    else v=b+(f>>2);
+                    if(v<0)v=0;if(v>31)v=31;
+                    result|=(unsigned)v<<(5*c);
+                }
+                background[index]=result;
+            }
+        }
+        DrawSync(0);StoreImage(&region,(u_long*)actual);DrawSync(0);
+        for(unsigned i=0;i<width*height;++i)zexpect_u16_eq(background[i],actual[i]);
+    }
 }
 
 ZTEST(gpu, polygon_attribute_batch_boundaries) {

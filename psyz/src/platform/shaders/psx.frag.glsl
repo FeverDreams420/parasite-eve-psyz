@@ -15,11 +15,20 @@ layout(location = 11) flat in uvec4 texWindow;
 layout(location = 12) flat in uint polygon;
 
 layout(set = 2, binding = 0) uniform sampler2D texVram;
+layout(set = 2, binding = 1) uniform sampler2D texBlend;
 layout(set = 3, binding = 0) uniform PassMode { uvec4 passMode; };
+
+float attributeRoundingBias() {
+    // Native 1:1 polygon attributes occupy a 1/4096 lattice. Half an LSB
+    // repairs floating interpolation just below an exact integer without
+    // rounding the preceding representable value up to it.
+    return polygon != 0u && passMode.y == 1u && passMode.z != 0u
+        ? 1.0 / 8192.0 : 0.0;
+}
 
 uvec2 resolveTexel() {
     // PS1 interpolates at integer pixel coordinates, the GPU at pixel centres.
-    vec2 uv = polygon != 0u ? rawUV :
+    vec2 uv = polygon != 0u ? rawUV + attributeRoundingBias() :
         rawUV - 0.5 * (dFdx(rawUV) + dFdy(rawUV)) + 1.0 / 512.0;
     uvec2 texel = uvec2(ivec2(floor(uv))) & uvec2(255u);
     return (texel & texWindow.xy) | texWindow.zw;
@@ -71,7 +80,7 @@ void main() {
         FragColor = vec4(0);
         return;
     }
-    if (passMode.x != 0u) {
+    if (passMode.x == 1u) {
         FragColor = vec4(0,0,0,textureMode == 0u ? 0.0 : texColor.a);
         return;
     }
@@ -83,16 +92,31 @@ void main() {
     vec3 modColor;
     if (textureMode == 0u) {
         // untextured: PS1 uses color directly, no modulation
-        modColor = texColor.rgb * vertexColor.rgb;
+        modColor = texColor.rgb * (vertexColor.rgb + attributeRoundingBias() / 255.0);
     } else {
         vec3 tex5 = floor(texColor.rgb * 31.0 + 0.5);
         vec3 col8 = min(floor(vertexColor.rgb * 127.5 +
-                             (polygon != 0u ? 0.0 : 0.5)), vec3(255.0));
+                             (polygon != 0u ? attributeRoundingBias() : 0.5)), vec3(255.0));
         vec3 prod8 = min(tex5 * col8 / 16.0, vec3(255.0));
         modColor = dither != 0u ? prod8 / 255.0
                                 : floor(prod8 / 8.0) / 31.0;
     }
     modColor = applyDither(modColor);
+    if (passMode.x == 2u) {
+        ivec3 color = ivec3(floor(modColor * 31.0 + 0.5));
+        if (colorSemiTrans && isSemiTrans) {
+            ivec3 back = ivec3(floor(texelFetch(texBlend,
+                ivec2(gl_FragCoord.xy), 0).rgb * 31.0 + 0.5));
+            uint abr = (tpage & 0x60u) >> 5u;
+            if (abr == 0u) color = (back + color) >> 1;
+            else if (abr == 1u) color = back + color;
+            else if (abr == 2u) color = back - color;
+            else color = back + (color >> 2);
+        }
+        FragColor = vec4(vec3(clamp(color,ivec3(0),ivec3(31))) / 31.0,
+                         textureMode == 0u ? 0.0 : texColor.a);
+        return;
+    }
     // pre-multiplied alpha output for ONE, ONE_MINUS_SRC_ALPHA blending
     if (colorSemiTrans && isSemiTrans) {
         uint abr = (tpage & 0x60u) >> 5u;
