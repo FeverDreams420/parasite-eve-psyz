@@ -708,6 +708,31 @@ ZTEST(gpu, move_image_overlap) {
     ASSERT_FRAME("move_image_overlap", 0, 1.0f);
 }
 
+ZTEST(gpu, clear_image_quantizes_rgb555_before_blending) {
+    enum { width = 258, height = 6 };
+    u16 expected[width * height], actual[width * height];
+    RECT region = {400, 300, width, height};
+    for (int i = 0; i < width * height; ++i) expected[i] = 0x5a5a;
+    LoadImage(&region, (u_long*)expected);
+    DrawSync(0);
+    for (int row = 0; row < 4; ++row) {
+        for (int value = 0; value < 256; ++value) {
+            u8 r = row == 0 || row == 3 ? value : 0;
+            u8 g = row == 1 ? value : row == 3 ? 255 - value : 0;
+            u8 b = row == 2 ? value : row == 3 ? value ^ 0x55 : 0;
+            RECT pixel = {401 + value, 301 + row, 1, 1};
+            ClearImage(&pixel, r, g, b);
+            expected[(row + 1) * width + value + 1] =
+                (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10);
+        }
+    }
+    DrawSync(0);
+    StoreImage(&region, (u_long*)actual);
+    DrawSync(0);
+    for (int i = 0; i < width * height; ++i)
+        zexpect_u16_eq(expected[i], actual[i]);
+}
+
 ZTEST(gpu, move_image_internal_res) {
     u_short tpage, clut;
     RECT rect = {16, 16, 64, 64};

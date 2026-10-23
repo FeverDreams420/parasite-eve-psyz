@@ -1472,10 +1472,11 @@ void Draw_ClearImage(PS1_RECT* rect, u_char r, u_char g, u_char b) {
     quad[2].y = (short)(rect->y + rect->h);
     quad[3].x = (short)(rect->x + rect->w);
     quad[3].y = (short)(rect->y + rect->h);
+    /* The fill writes RGB555 before any later polygon blends with VRAM. */
     for (int i = 0; i < 4; i++) {
-        quad[i].r = r;
-        quad[i].g = g;
-        quad[i].b = b;
+        quad[i].r = color_5to8(r >> 3);
+        quad[i].g = color_5to8(g >> 3);
+        quad[i].b = color_5to8(b >> 3);
         quad[i].a = 0;
     }
 
