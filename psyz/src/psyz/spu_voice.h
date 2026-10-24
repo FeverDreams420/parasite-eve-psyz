@@ -3,13 +3,14 @@
 
 #include <psyz.h>
 #include <string.h>
+#include <stdint.h>
 #include "../../decomp/src/libspu/libspu_private.h"
 #include "spu_gauss.h"
 
 // One ADPCM block decodes to 28 samples
 #define ADPCM_BLOCK_BYTES 16
 #define ADPCM_BLOCK_SAMPLES 28
-#define ENV_KEYON_DELAY_TICKS 6 // key-on latch, decoder warm-up, then envelope
+#define ENV_KEYON_DELAY_TICKS 5 // key-on latch plus four decoder warm-up ticks
 
 static inline short clamp16(int v) {
     if (v < -32768)
@@ -88,10 +89,11 @@ typedef struct {
     u8 gpos;        // index to next decoded sample in gwin
     u8 active;
     u8 needs_decode;
+    u8 noise_mode;       // NON bypasses the ADPCM end-triggered envelope stop
     int env_vol;          // mirrors SPU_VOICE_REG::volumex
-    unsigned env_counter; // rate divider, increases by 1 for all voice duration
+    unsigned env_counter; // fractional 15-bit envelope rate divider
     AdsrState env_state;  // voice phase, works like a state machine
-    u8 key_off;           // set by key-off; drives the release phase
+    u8 key_off;           // 0: none, 1: pending, 2: release latched
     u8 delay_ticks;       // key-on -> envelope-start pipeline latency
     u16 adsr_lo;          // mirrors SPU_VOICE_REG::adsr[0]
     u16 adsr_hi;          // mirrors SPU_VOICE_REG::adsr[1]
@@ -132,7 +134,7 @@ static inline int spu_voice_decode_one_sample(VoiceState* vs, const u8* ram) {
     if (vs->sample_idx >= ADPCM_BLOCK_SAMPLES) {
         // end of block, and handle loop/end flags
         if (!vs->needs_decode && (vs->block_flags & 0x01)) {
-            if (!(vs->block_flags & 0x02)) {
+            if (!(vs->block_flags & 0x02) && !vs->noise_mode) {
                 vs->active = 0;
                 vs->gwin[vs->gpos] = 0;
                 vs->gpos = (vs->gpos + 1) & 3;
@@ -184,23 +186,37 @@ static inline short spu_voice_step(
         vs->spos -= 0x10000;
     }
 
+    // The ADPCM decoder runs ahead of interpolation. When it reaches the
+    // next header with fewer than eleven samples queued, a non-repeating
+    // END block silences the envelope, including its still-buffered tail.
+    // Four queued samples are held by gwin; six remain in this block here.
+    if ((vs->block_flags & 3) == 1 && !vs->noise_mode &&
+        vs->sample_idx >= ADPCM_BLOCK_SAMPLES - 6) {
+        vs->env_vol = 0;
+        vs->env_state = ADSR_OFF;
+        vs->active = 0;
+        return 0;
+    }
+
     // GAUSS interpolation
     int vl = (vs->spos >> 6) & ~3;
     int g0 = vs->gwin[vs->gpos & 3];
     int g1 = vs->gwin[(vs->gpos + 1) & 3];
     int g2 = vs->gwin[(vs->gpos + 2) & 3];
     int g3 = vs->gwin[(vs->gpos + 3) & 3];
-    // The SPU truncates each signed product separately before summing.
-    int acc = (spu_gauss_tbl[vl + 0] * g0) >> 15;
-    acc += (spu_gauss_tbl[vl + 1] * g1) >> 15;
-    acc += (spu_gauss_tbl[vl + 2] * g2) >> 15;
-    acc += (spu_gauss_tbl[vl + 3] * g3) >> 15;
+    // Preserve the fractional products until all four taps have been summed.
+    // Per-tap rounding changes the FM modulator and accumulates pitch error.
+    int acc = spu_gauss_tbl[vl + 0] * g0;
+    acc += spu_gauss_tbl[vl + 1] * g1;
+    acc += spu_gauss_tbl[vl + 2] * g2;
+    acc += spu_gauss_tbl[vl + 3] * g3;
     vs->spos += vs->sinc;
-    return clamp16(acc);
+    return clamp16(acc >> 15);
 }
 
 static inline unsigned adsr_denominator(int rate) {
-    return rate < 48 ? 1u : (1u << ((rate >> 2) - 11));
+    unsigned shift = rate < 48 ? 0 : (unsigned)((rate >> 2) - 11);
+    return 1u << (shift > 15 ? 15 : shift);
 }
 
 static inline int adsr_num_increase(int rate) {
@@ -215,7 +231,7 @@ static inline int adsr_num_decrease(int rate) {
                      : (-8 + (rate & 3));
 }
 
-// The rate driving the current phase; it only changes when the phase fires.
+// Effective rate of the current envelope phase, including exponential slowdown.
 static inline int spu_voice_envelope_rate(const VoiceState* vs) {
     switch (vs->env_state) {
     case ADSR_ATTACK: {
@@ -240,20 +256,34 @@ static inline int spu_voice_envelope_rate(const VoiceState* vs) {
     }
 }
 
+// The divider advances by a rate-dependent fraction and resets on a
+// firing. A free-running tick modulo would carry attack ticks into decay
+// and shift the modulator envelope, accumulating FM phase error.
+static inline unsigned spu_voice_envelope_increment(const VoiceState* vs, int rate) {
+    if ((vs->env_state == ADSR_ATTACK && ((vs->adsr_lo >> 8) & 127) == 127) ||
+        (vs->env_state == ADSR_SUSTAIN && ((vs->adsr_hi >> 6) & 127) == 127) ||
+        (vs->env_state == ADSR_RELEASE && (vs->adsr_hi & 31) == 31) ||
+        vs->env_state == ADSR_OFF)
+        return 0;
+    return 0x8000u / adsr_denominator(rate);
+}
+
+static inline int spu_voice_envelope_clock(VoiceState* vs, int rate) {
+    vs->env_counter += spu_voice_envelope_increment(vs, rate);
+    if (vs->env_counter < 0x8000) return 0;
+    vs->env_counter = 0;
+    return 1;
+}
+
 // process voice ADSR envelope by one sample, calculate ADSR envelope volume
 static inline void spu_voice_envelope_step(VoiceState* vs) {
     if (vs->delay_ticks) { // simulate PS1 SPU key on latency
         vs->delay_ticks--;
         return;
     }
-    if (vs->key_off && vs->env_state != ADSR_OFF) {
-        vs->env_state = ADSR_RELEASE;
-    }
+    int release_pending = vs->key_off == 1;
 
-    // the PS1 SPU has an internal counter, shared across all states, that
-    // allows to trigger a change based on the selected ADSR rate
-    unsigned ctr = ++vs->env_counter;
-#define ADSR_FIRES(rate) ((ctr % adsr_denominator(rate)) == 0)
+#define ADSR_FIRES(rate) spu_voice_envelope_clock(vs, (rate))
 
     switch (vs->env_state) {
     case ADSR_ATTACK: {
@@ -339,6 +369,15 @@ static inline void spu_voice_envelope_step(VoiceState* vs) {
         break;
     }
 #undef ADSR_FIRES
+    // Key-off is latched after the current envelope clock. Releasing before
+    // that clock shifts an FM modulator by one sample and moves the carrier.
+    if (release_pending) {
+        vs->key_off = 2;
+        if (vs->env_state != ADSR_OFF && vs->env_state != ADSR_RELEASE) {
+            vs->env_state = ADSR_RELEASE;
+            vs->env_counter = 0;
+        }
+    }
 }
 
 // Up to n exponential firings of env -= ceil(q * env / 32768), stopping below
@@ -453,28 +492,32 @@ static inline void spu_voice_envelope_advance(VoiceState* vs, unsigned ticks) {
             ticks -= n;
             continue;
         }
-        if (vs->key_off && vs->env_state != ADSR_OFF) {
-            vs->env_state = ADSR_RELEASE;
-        }
-        int held = vs->env_state == ADSR_OFF ||
-                   (vs->env_state == ADSR_SUSTAIN &&
-                    ((vs->adsr_hi & 0x4000) ? vs->env_vol == 0
-                                            : vs->env_vol == 0x7FFF));
-        if (held) {
-            vs->env_counter += ticks;
-            return;
+        if (vs->key_off == 1) {
+            spu_voice_envelope_step(vs);
+            ticks--;
+            continue;
         }
         int rate = spu_voice_envelope_rate(vs);
-        unsigned den = adsr_denominator(rate);
-        unsigned first = den - (vs->env_counter & (den - 1));
+        unsigned increment = spu_voice_envelope_increment(vs, rate);
+        if (!increment) return;
+        int held = vs->env_state == ADSR_SUSTAIN &&
+                   ((vs->adsr_hi & 0x4000) ? vs->env_vol == 0
+                                          : vs->env_vol == 0x7FFF);
+        if (held) {
+            vs->env_counter = (unsigned)(vs->env_counter +
+                (uint64_t)ticks * increment) & 0x7FFF;
+            return;
+        }
+        unsigned den = 0x8000u / increment;
+        unsigned first = (0x8000u - vs->env_counter + increment - 1) / increment;
         if (first > ticks) {
-            vs->env_counter += ticks;
+            vs->env_counter += ticks * increment;
             return;
         }
         unsigned fired =
             spu_voice_envelope_fire(vs, rate, 1 + (ticks - first) / den);
         unsigned used = first + (fired - 1) * den;
-        vs->env_counter += used;
+        vs->env_counter = 0;
         ticks -= used;
     }
 }

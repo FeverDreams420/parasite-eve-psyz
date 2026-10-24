@@ -410,21 +410,24 @@ static void spu_tick(short* out) {
         }
         if (pitch > 0x4000)
             pitch = 0x4000;
-        if (spu.voice[v].delay_ticks > 1) {
+        if (spu.voice[v].delay_ticks) {
             spu.voice[v].delay_ticks--;
             rxx->voice[v].volumex = 0;
             previous_sample = 0;
             continue;
         }
+        spu.voice[v].noise_mode = (rxx->noise_mode[word] & bit) != 0;
         short s = spu_voice_step(&spu.voice[v], pitch, spu.ram);
         if (rxx->noise_mode[word] & bit)
             s = (short)spu.noise_level;
-        spu_voice_envelope_step(&spu.voice[v]);
         if (spu.voice[v].env_state == ADSR_OFF) {
             s = 0;
         }
-        rxx->voice[v].volumex = (unsigned short)spu.voice[v].env_vol;
         s = (short)(((int)s * spu.voice[v].env_vol) >> 15);
+        // ENVX advances after this sample has been scaled. It is readable
+        // immediately, and supplies the gain of the next output sample.
+        spu_voice_envelope_step(&spu.voice[v]);
+        rxx->voice[v].volumex = (unsigned short)spu.voice[v].env_vol;
         previous_sample = s;
         if (v == 1) {
             v1_sample = s;

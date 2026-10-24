@@ -58,9 +58,9 @@ ZTEST(spu, GaussianHardwareImpulse) {
         voice.spos = phases[phase] << 8;
         for (unsigned tap = 0; tap < 4; ++tap) {
             voice.gwin[tap] = samples[tap];
-            expected += (taps[phase][tap] * samples[tap]) >> 15;
+            expected += taps[phase][tap] * samples[tap];
         }
-        zexpect_s32_eq(expected, spu_voice_step(&voice, 0, NULL));
+        zexpect_s32_eq(expected >> 15, spu_voice_step(&voice, 0, NULL));
     }
 }
 #endif
@@ -464,8 +464,8 @@ static int check_golden(const char* name, const unsigned char* cap) {
 #ifdef __psyz
 ZTEST(spu, GaussianKeyOnPitchPhase) {
     // Independent SPU replay: Beetle PSX 9164674, with its frontend-only
-    // 75% headroom attenuation removed. Allow eight PCM units for the
-    // documented per-tap truncation versus its combined accumulator.
+    // 75% headroom attenuation removed. Fractional Gaussian products are
+    // summed before shifting, as in the hardware-validated FPGA core.
     static const unsigned char block[16] = {
         0,7,0x10,0x32,0x54,0x76,0x77,0x65,0x43,0x21,
         0xef,0xcd,0xab,0x89,0x88,0x9a
@@ -488,11 +488,122 @@ ZTEST(spu, GaussianKeyOnPitchPhase) {
         Psyz_SpuWrite(0x1E,0x200);Psyz_SpuWrite(0x188,2);
         Psyz_SpuPullSamples(pcm,32);
         for (unsigned frame=0;frame<32;++frame) {
-            int delta=pcm[frame*2]-reference[pass][frame];
-            zexpect_s32_eq(1,delta>=-8 && delta<=8);
+            zexpect_s32_eq(reference[pass][frame],pcm[frame*2]);
             zexpect_s32_eq(pcm[frame*2],pcm[frame*2+1]);
         }
     }
+}
+#endif
+
+#ifdef __psyz
+ZTEST(spu, GaussianFmReference) {
+    // Independent Beetle PSX 9164674 output without frontend attenuation.
+    // Check two-second sustained and key-off cases. Spaced exact windows
+    // catch errors that accumulate FM carrier phase over many samples.
+    static const unsigned char block[16]={
+        0,7,0x10,0x32,0x54,0x76,0x77,0x65,0x43,0x21,
+        0xef,0xcd,0xab,0x89,0x88,0x9a
+    };
+    static const unsigned starts[2][6]={
+        {0,256,8192,32768,65536,88184},
+        {29998,30016,30128,32768,65536,88184}
+    };
+    static const short reference[2][6][16]={
+      {
+        {0,0,0,0,0,0,5140,17768,28513,22290,9104,-8376,-22718,-32639,-21173,9105},
+        {-32615,-23131,10457,24636,26380,14116,5729,-10286,-19397,-27126,-32221,-32613,-30309,-26602,-26131,-26217},
+        {1808,5645,8099,9485,9820,9852,10171,11731,14902,22835,28547,22155,13269,-4111,-18234,-31973},
+        {6140,-12357,-26679,-32085,-4117,11142,22054,28530,23112,20085,14367,9243,5977,6186,5479,5378},
+        {14125,13338,8297,6303,6092,6078,5979,6223,3089,-9489,-18633,-28862,-31942,-5523,13038,27154},
+        {-10589,-11990,-14030,-21229,-30069,-32037,-13761,10155,23345,26380,14433,-3670,-17342,-29337,-31798,-20088},
+      },
+      {
+        {6960,6250,5203,3718,3584,-4788,-12852,-20513,-28178,-32628,-27584,-13027,5821,13485,21147,28066},
+        {14433,6205,-5833,-13632,-21294,-28958,-32630,-26686,-8643,6602,14265,21926,28332,26715,21992,14229},
+        {-20676,4386,12050,19712,27191,28357,22333,14135,5971,-3727,-12198,-19859,-27524,-32612,-28567,-16731},
+        {19569,27078,28395,22277,14118,6004,-3439,-12054,-19716,-27380,-32605,-28790,-17596,5008,12672,20350},
+        {-7333,-15002,-22664,-30294,-32609,-26105,-2514,7971,15635,23297,28522,24707,19719,12550,5203,-8119},
+        {-25802,-32357,-31049,-24146,3425,11094,18756,26390,28515,22048,14283,6503,-1805,-11241,-18903,-26583},
+      },
+    };
+    for(unsigned pass=0;pass<2;++pass) {
+        Psyz_SpuReset(0);Psyz_SpuMemWrite(0x1000,block,sizeof(block));
+        Psyz_SpuWrite(0x1AA,0xC000);
+        Psyz_SpuWrite(0x180,0x3FFF);Psyz_SpuWrite(0x182,0x3FFF);
+        Psyz_SpuWrite(0x184,0);Psyz_SpuWrite(0x186,0);
+        Psyz_SpuWrite(0x190,2);Psyz_SpuWrite(0x192,0);
+        Psyz_SpuWrite(0x194,0);Psyz_SpuWrite(0x196,0);
+        Psyz_SpuWrite(0x198,0);Psyz_SpuWrite(0x19A,0);
+        for(unsigned voice=0;voice<2;++voice) {
+            unsigned base=voice*16;
+            Psyz_SpuWrite(base,voice?0x3FFF:0);Psyz_SpuWrite(base+2,voice?0x3FFF:0);
+            Psyz_SpuWrite(base+4,voice?0x1E12:0x1234);Psyz_SpuWrite(base+6,0x200);
+            Psyz_SpuWrite(base+8,0x00FF);Psyz_SpuWrite(base+10,0x1FC0);
+            Psyz_SpuWrite(base+14,0x200);
+        }
+        Psyz_SpuWrite(0x188,3);
+        for(unsigned cursor=0;cursor<88200;) {
+            unsigned frames=88200-cursor;short pcm[256];
+            if(pass && cursor==30000) {
+                Psyz_SpuWrite(0x18,0x0CFF);
+                Psyz_SpuWrite(0x18C,1); // release the muted modulator only
+            }
+            if(frames>128)frames=128;
+            if(pass && cursor<30000 && frames>30000-cursor)frames=30000-cursor;
+            Psyz_SpuPullSamples(pcm,(int)frames);
+            for(unsigned frame=0;frame<frames;++frame)
+                for(unsigned window=0;window<6;++window)
+                    if(cursor+frame>=starts[pass][window] && cursor+frame<starts[pass][window]+16) {
+                        short expected=reference[pass][window][cursor+frame-starts[pass][window]];
+                        zexpect_s32_eq(expected,pcm[frame*2]);
+                        zexpect_s32_eq(expected,pcm[frame*2+1]);
+                    }
+            cursor+=frames;
+        }
+    }
+}
+#endif
+
+#ifdef __psyz
+ZTEST(spu, AdpcmOneShotEndPipeline) {
+    // Independently observed END timing from Beetle PSX 9164674. Decoding
+    // runs ahead of playback; the final queued samples must not leak out.
+    static const unsigned pitches[7]={0x400,0x800,0x1000,0x1234,0x2000,0x3000,0x4000};
+    static const unsigned stops[2][7]={
+        {77,41,23,21,14,11,10},
+        {189,97,51,46,28,21,17},
+    };
+    for(unsigned blocks=1;blocks<=2;++blocks)for(unsigned pass=0;pass<7;++pass) {
+        unsigned char data[32];short pcm[520];
+        memset(data,0x77,sizeof(data));data[0]=0;data[1]=blocks==1?1:0;
+        data[16]=0;data[17]=1;
+        Psyz_SpuReset(0);Psyz_SpuMemWrite(0x1000,data,blocks*16);
+        Psyz_SpuWrite(0x1AA,0xC000);
+        Psyz_SpuWrite(0x180,0x3FFF);Psyz_SpuWrite(0x182,0x3FFF);
+        Psyz_SpuWrite(0x184,0);Psyz_SpuWrite(0x186,0);
+        Psyz_SpuWrite(0x190,0);Psyz_SpuWrite(0x192,0);
+        Psyz_SpuWrite(0x194,0);Psyz_SpuWrite(0x196,0);
+        Psyz_SpuWrite(0x10,0x3FFF);Psyz_SpuWrite(0x12,0x3FFF);
+        Psyz_SpuWrite(0x14,pitches[pass]);Psyz_SpuWrite(0x16,0x200);
+        Psyz_SpuWrite(0x18,0x00FF);Psyz_SpuWrite(0x1A,0x1FC0);
+        Psyz_SpuWrite(0x1E,0x200);Psyz_SpuWrite(0x188,2);
+        Psyz_SpuPullSamples(pcm,260);
+        unsigned stop=stops[blocks-1][pass];
+        zexpect_s32_ne(0,pcm[(stop-1)*2]);
+        for(unsigned frame=stop;frame<260;++frame) {
+            zexpect_s32_eq(0,pcm[frame*2]);
+            zexpect_s32_eq(0,pcm[frame*2+1]);
+        }
+        zexpect_u16_eq(0,Psyz_SpuRead(0x1C));
+    }
+    // NON replaces ADPCM and must keep the envelope running through END.
+    short pcm[520];Psyz_SpuReset(0);
+    const unsigned char end_block[16]={0,1};
+    Psyz_SpuMemWrite(0x1000,end_block,sizeof(end_block));
+    Psyz_SpuWrite(0x1AA,0xFF00);Psyz_SpuWrite(0x14,0x1000);
+    Psyz_SpuWrite(0x194,2);Psyz_SpuWrite(0x188,2);
+    Psyz_SpuPullSamples(pcm,260);
+    zexpect_s32_ne(0,Psyz_SpuRead(0x1C));
 }
 #endif
 
@@ -730,10 +841,9 @@ ZTEST(spu, KeyOnLatchesStartAddrAndActivates) {
 }
 
 ZTEST(spu, KeyOffSilencesVoice) {
-    // TODO this test has the stange consequence where voice_envelope_step must
-    // be called before the samples are captured, despite the capture itself
-    // not being afected by the voice envelope. It seems to match the generated
-    // samples, but it needs to be double-checked on real hardware.
+    // Capture taps use the current envelope; the updated ENVX applies to
+    // the next sample. Permit that final current sample before checking the
+    // following silent capture writes.
     unsigned char zeros[128] = {0};
     short cap[64];
     int i;
@@ -742,6 +852,8 @@ ZTEST(spu, KeyOffSilencesVoice) {
     Psyz_SpuWrite(0x188, 1u << 1);
     pull_samples_nop(56);
     Psyz_SpuWrite(0x18C, 1u << 1); // KEY_OFF voice 1
+    pull_samples_nop(2); // latch key-off, then finish the release clock
+    zexpect_u16_eq(0,Psyz_SpuRead(0x1C));
     // Zero out the capture region so we observe only post-keyoff writes.
     Psyz_SpuMemWrite(0x0800, zeros, sizeof(zeros));
     pull_samples_nop(64);
@@ -983,15 +1095,15 @@ ZTEST(spu, adsr_attack_linear_shift) {
 
     adsr_capture(ADSR_ATTACK(0, 11, 0) | base, envx, 4);
     zexpect_u16_eq(0x0007, envx[0]);
-    EXPECT_ENVX_NEAR(0x0dcf, 7, envx[1]);
-    EXPECT_ENVX_NEAR(0x1bcf, 7, envx[2]);
-    EXPECT_ENVX_NEAR(0x29cf, 7, envx[3]);
+    EXPECT_ENVX_NEAR(0x0ddd, 7, envx[1]);
+    EXPECT_ENVX_NEAR(0x1bdd, 7, envx[2]);
+    EXPECT_ENVX_NEAR(0x29dd, 7, envx[3]);
 
     adsr_capture(ADSR_ATTACK(1, 11, 0) | base, envx, 4);
     zexpect_u16_eq(0x0006, envx[0]);
-    EXPECT_ENVX_NEAR(0x0bdc, 7, envx[1]);
-    EXPECT_ENVX_NEAR(0x17d6, 7, envx[2]);
-    EXPECT_ENVX_NEAR(0x23d6, 7, envx[3]);
+    EXPECT_ENVX_NEAR(0x0be2, 7, envx[1]);
+    EXPECT_ENVX_NEAR(0x17e2, 7, envx[2]);
+    EXPECT_ENVX_NEAR(0x23e2, 7, envx[3]);
 
     adsr_capture(ADSR_ATTACK(0, 12, 0) | base, envx, 32);
     zexpect_u16_eq(0x0007, envx[0]);
@@ -1066,6 +1178,9 @@ ZTEST(spu, adsr_attack_exponential) {
         EXPECT_ENVX_NEAR(e[i], 7, envx[i + 1]);
 }
 
+// Nominal ENVX checkpoints use a synchronized independent SPU replay
+// (Beetle PSX 9164674). Keep the original one-step capture tolerances;
+// CPU polling latency on hardware can shift a bit-11 checkpoint slightly.
 ZTEST(spu, adsr_decay_shift) {
     uint16_t envx[0x40];
     int i;
@@ -1074,15 +1189,15 @@ ZTEST(spu, adsr_decay_shift) {
                      ADSR_SUSTAIN(0, 0, 0, 1, 0) | ADSR_RELEASE(0, 1),
                  envx, 16);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x6370, 0x07, envx[1]);
-    EXPECT_ENVX_NEAR(0x4c95, 0x05, envx[2]);
-    EXPECT_ENVX_NEAR(0x3ac6, 0x04, envx[3]);
-    EXPECT_ENVX_NEAR(0x2cef, 0x03, envx[4]);
-    EXPECT_ENVX_NEAR(0x221c, 0x03, envx[5]);
-    EXPECT_ENVX_NEAR(0x19b0, 0x02, envx[6]);
-    EXPECT_ENVX_NEAR(0x1343, 0x02, envx[7]);
-    EXPECT_ENVX_NEAR(0x0e2d, 0x01, envx[8]);
-    EXPECT_ENVX_NEAR(0x0a2d, 0x01, envx[9]);
+    EXPECT_ENVX_NEAR(0x635d, 0x07, envx[1]);
+    EXPECT_ENVX_NEAR(0x4c86, 0x05, envx[2]);
+    EXPECT_ENVX_NEAR(0x3aba, 0x04, envx[3]);
+    EXPECT_ENVX_NEAR(0x2ce6, 0x03, envx[4]);
+    EXPECT_ENVX_NEAR(0x2215, 0x03, envx[5]);
+    EXPECT_ENVX_NEAR(0x19aa, 0x02, envx[6]);
+    EXPECT_ENVX_NEAR(0x133f, 0x02, envx[7]);
+    EXPECT_ENVX_NEAR(0x0e2a, 0x01, envx[8]);
+    EXPECT_ENVX_NEAR(0x0a2a, 0x01, envx[9]);
     for (i = 10; i < 16; i++)
         zexpect_u16_eq(0x0000, envx[i]);
 
@@ -1090,17 +1205,17 @@ ZTEST(spu, adsr_decay_shift) {
                      ADSR_SUSTAIN(0, 0, 0, 1, 0) | ADSR_RELEASE(0, 1),
                  envx, 32);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x7e05, 0x02, envx[1]);
-    EXPECT_ENVX_NEAR(0x7c05, 0x02, envx[2]);
-    EXPECT_ENVX_NEAR(0x7805, 0x02, envx[4]);
-    EXPECT_ENVX_NEAR(0x7405, 0x02, envx[6]);
-    EXPECT_ENVX_NEAR(0x7005, 0x02, envx[8]);
-    EXPECT_ENVX_NEAR(0x6906, 0x02, envx[12]);
-    EXPECT_ENVX_NEAR(0x6206, 0x02, envx[16]);
-    EXPECT_ENVX_NEAR(0x5bba, 0x02, envx[20]);
-    EXPECT_ENVX_NEAR(0x55ba, 0x02, envx[24]);
-    EXPECT_ENVX_NEAR(0x4fc7, 0x02, envx[28]);
-    EXPECT_ENVX_NEAR(0x4c05, 0x02, envx[31]);
+    EXPECT_ENVX_NEAR(0x7e0f, 0x02, envx[1]);
+    EXPECT_ENVX_NEAR(0x7c0f, 0x02, envx[2]);
+    EXPECT_ENVX_NEAR(0x780f, 0x02, envx[4]);
+    EXPECT_ENVX_NEAR(0x740f, 0x02, envx[6]);
+    EXPECT_ENVX_NEAR(0x700f, 0x02, envx[8]);
+    EXPECT_ENVX_NEAR(0x690d, 0x02, envx[12]);
+    EXPECT_ENVX_NEAR(0x620d, 0x02, envx[16]);
+    EXPECT_ENVX_NEAR(0x5bc2, 0x02, envx[20]);
+    EXPECT_ENVX_NEAR(0x55c2, 0x02, envx[24]);
+    EXPECT_ENVX_NEAR(0x4fcc, 0x02, envx[28]);
+    EXPECT_ENVX_NEAR(0x4c0c, 0x02, envx[31]);
 }
 
 typedef struct {
@@ -1141,8 +1256,8 @@ ZTEST(spu, adsr_sustain_up_linear) {
                      ADSR_SUSTAIN(0, 10, 15, 0, 0) | ADSR_RELEASE(0, 1),
                  envx, 8);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x5b50, 0x07, envx[1]);
-    EXPECT_ENVX_NEAR(0x7750, 0x07, envx[2]);
+    EXPECT_ENVX_NEAR(0x5b65, 0x07, envx[1]);
+    EXPECT_ENVX_NEAR(0x7765, 0x07, envx[2]);
     for (i = 3; i < 8; i++)
         zexpect_u16_eq(0x7fff, envx[i]);
 
@@ -1150,13 +1265,13 @@ ZTEST(spu, adsr_sustain_up_linear) {
                      ADSR_SUSTAIN(0, 14, 15, 0, 0) | ADSR_RELEASE(0, 1),
                  envx, 32);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x41b8, 0x02, envx[1]);
-    EXPECT_ENVX_NEAR(0x46f8, 0x02, envx[4]);
-    EXPECT_ENVX_NEAR(0x4df8, 0x02, envx[8]);
-    EXPECT_ENVX_NEAR(0x54f8, 0x02, envx[12]);
-    EXPECT_ENVX_NEAR(0x5bf8, 0x02, envx[16]);
-    EXPECT_ENVX_NEAR(0x70f8, 0x02, envx[28]);
-    EXPECT_ENVX_NEAR(0x7638, 0x02, envx[31]);
+    EXPECT_ENVX_NEAR(0x41b1, 0x02, envx[1]);
+    EXPECT_ENVX_NEAR(0x46f1, 0x02, envx[4]);
+    EXPECT_ENVX_NEAR(0x4df1, 0x02, envx[8]);
+    EXPECT_ENVX_NEAR(0x54f1, 0x02, envx[12]);
+    EXPECT_ENVX_NEAR(0x5bf1, 0x02, envx[16]);
+    EXPECT_ENVX_NEAR(0x70f1, 0x02, envx[28]);
+    EXPECT_ENVX_NEAR(0x7631, 0x02, envx[31]);
 }
 
 ZTEST(spu, adsr_sustain_down_linear) {
@@ -1167,9 +1282,9 @@ ZTEST(spu, adsr_sustain_down_linear) {
                      ADSR_SUSTAIN(3, 10, 15, 1, 0) | ADSR_RELEASE(0, 1),
                  envx, 8);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x2c7c, 0x05, envx[1]);
-    EXPECT_ENVX_NEAR(0x187c, 0x05, envx[2]);
-    EXPECT_ENVX_NEAR(0x047c, 0x05, envx[3]);
+    EXPECT_ENVX_NEAR(0x2c6d, 0x05, envx[1]);
+    EXPECT_ENVX_NEAR(0x186d, 0x05, envx[2]);
+    EXPECT_ENVX_NEAR(0x046d, 0x05, envx[3]);
     for (i = 4; i < 8; i++)
         zexpect_u16_eq(0x0000, envx[i]);
 
@@ -1177,12 +1292,12 @@ ZTEST(spu, adsr_sustain_down_linear) {
                      ADSR_SUSTAIN(0, 14, 15, 1, 0) | ADSR_RELEASE(0, 1),
                  envx, 32);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x3e05, 0x02, envx[1]);
-    EXPECT_ENVX_NEAR(0x3805, 0x02, envx[4]);
-    EXPECT_ENVX_NEAR(0x3005, 0x02, envx[8]);
-    EXPECT_ENVX_NEAR(0x2005, 0x02, envx[16]);
-    EXPECT_ENVX_NEAR(0x1005, 0x02, envx[24]);
-    EXPECT_ENVX_NEAR(0x0205, 0x02, envx[31]);
+    EXPECT_ENVX_NEAR(0x3e0f, 0x02, envx[1]);
+    EXPECT_ENVX_NEAR(0x380f, 0x02, envx[4]);
+    EXPECT_ENVX_NEAR(0x300f, 0x02, envx[8]);
+    EXPECT_ENVX_NEAR(0x200f, 0x02, envx[16]);
+    EXPECT_ENVX_NEAR(0x100f, 0x02, envx[24]);
+    EXPECT_ENVX_NEAR(0x020f, 0x02, envx[31]);
 }
 
 ZTEST(spu, adsr_sustain_up_exponential) {
@@ -1192,12 +1307,12 @@ ZTEST(spu, adsr_sustain_up_exponential) {
                      ADSR_SUSTAIN(0, 12, 15, 0, 1) | ADSR_RELEASE(0, 1),
                  envx, 24);
     zexpect_u16_eq(0x1c00, envx[0]);
-    EXPECT_ENVX_NEAR(0x46d1, 0x04, envx[1]);
-    EXPECT_ENVX_NEAR(0x5bd1, 0x04, envx[4]);
-    EXPECT_ENVX_NEAR(0x60ba, 0x02, envx[5]);
-    EXPECT_ENVX_NEAR(0x67ba, 0x02, envx[9]);
-    EXPECT_ENVX_NEAR(0x73fa, 0x02, envx[16]);
-    EXPECT_ENVX_NEAR(0x7afa, 0x02, envx[20]);
+    EXPECT_ENVX_NEAR(0x46d5, 0x04, envx[1]);
+    EXPECT_ENVX_NEAR(0x5bd5, 0x04, envx[4]);
+    EXPECT_ENVX_NEAR(0x60b3, 0x02, envx[5]);
+    EXPECT_ENVX_NEAR(0x67b3, 0x02, envx[9]);
+    EXPECT_ENVX_NEAR(0x73f3, 0x02, envx[16]);
+    EXPECT_ENVX_NEAR(0x7af3, 0x02, envx[20]);
     zexpect_u16_eq(0x7fff, envx[23]);
 }
 
