@@ -2,13 +2,14 @@
 #define PSYZ_SPU_VOICE_H
 
 #include <psyz.h>
+#include <string.h>
 #include "../../decomp/src/libspu/libspu_private.h"
 #include "spu_gauss.h"
 
 // One ADPCM block decodes to 28 samples
 #define ADPCM_BLOCK_BYTES 16
 #define ADPCM_BLOCK_SAMPLES 28
-#define ENV_KEYON_DELAY_TICKS 6 // latency to simulate PS1 SPU latching a key-on
+#define ENV_KEYON_DELAY_TICKS 6 // key-on latch, decoder warm-up, then envelope
 
 static inline short clamp16(int v) {
     if (v < -32768)
@@ -108,13 +109,12 @@ static inline void spu_voice_key_on(
     unsigned pitch = reg->pitch;
     vs->sinc = (pitch > 0x4000 ? 0x4000 : pitch) << 4;
 
-    // Start spos at 1.0 so the first voice_step consumes exactly one sample.
-    // The gauss window stays mostly zero-padded for several ticks, producing
-    // the silent warmup-then-ringing pattern observed in PS1 captures
-    vs->spos = 0x10000;
+    // The first interpolation window contains the first four decoded samples.
+    // Decode/playback phase remains frozen during the key-on pipeline delay.
+    vs->spos = 4 * 0x10000;
+    vs->gpos = 0;
+    memset(vs->gwin, 0, sizeof(vs->gwin));
 
-    // We do not reset vs->gpos at key-on for accuracy. On real PS1 hardware,
-    // a voice on will carry the residual state from prior voice activity
     vs->active = 1;
 
     // reset the envelope to a fresh attack from zero
@@ -190,13 +190,13 @@ static inline short spu_voice_step(
     int g1 = vs->gwin[(vs->gpos + 1) & 3];
     int g2 = vs->gwin[(vs->gpos + 2) & 3];
     int g3 = vs->gwin[(vs->gpos + 3) & 3];
-    int acc = (spu_gauss_tbl[vl + 0] * g0) & ~2047;
-    acc += (spu_gauss_tbl[vl + 1] * g1) & ~2047;
-    acc += (spu_gauss_tbl[vl + 2] * g2) & ~2047;
-    acc += (spu_gauss_tbl[vl + 3] * g3) & ~2047;
+    // The SPU truncates each signed product separately before summing.
+    int acc = (spu_gauss_tbl[vl + 0] * g0) >> 15;
+    acc += (spu_gauss_tbl[vl + 1] * g1) >> 15;
+    acc += (spu_gauss_tbl[vl + 2] * g2) >> 15;
+    acc += (spu_gauss_tbl[vl + 3] * g3) >> 15;
     vs->spos += vs->sinc;
-    // each tap keeps 11 fractional bits and the taps sum to 0x800: unity gain
-    return clamp16(acc >> 11);
+    return clamp16(acc);
 }
 
 static inline unsigned adsr_denominator(int rate) {

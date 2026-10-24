@@ -26,11 +26,11 @@ static struct {
     u16 capture_pos;
 
     unsigned reverb_cur;
-    int reverb_phase;
+    unsigned reverb_phase;
     int noise_timer;
     u16 noise_level;
-    short reverb_input[2];
-    short reverb_previous[2];
+    short reverb_input[2][64];
+    short reverb_output[2][64];
 
     VoiceState voice[PSYZ_SPU_NUM_VOICES];
 
@@ -255,10 +255,8 @@ static int reverb_mul(int sample, u16 coefficient) {
     return (sample * spu_s16(coefficient)) >> 15;
 }
 
-static void reverb_process_22050(
-    int input_left, int input_right, short output[2]) {
+static short reverb_process_channel(unsigned channel, int sample) {
     SPU_RXX* r = (SPU_RXX*)&_spu_RXX->rxx;
-    const int input[2] = {input_left, input_right};
     const u16 same_src[2] = {r->dLSAME, r->dRSAME};
     const u16 diff_src[2] = {r->dRDIFF, r->dLDIFF};
     const u16 same_dst[2] = {r->mLSAME, r->mRSAME};
@@ -270,15 +268,13 @@ static void reverb_process_22050(
     const u16 apf1[2] = {r->mLAPF1, r->mRAPF1};
     const u16 apf2[2] = {r->mLAPF2, r->mRAPF2};
     const u16 in_coef[2] = {r->vLIN, r->vRIN};
-    int channel;
-
-    for (channel = 0; channel < 2; channel++) {
+    {
         int iir_input_a =
             clamp16(reverb_mul(reverb_read(same_src[channel], 0), r->vWALL) +
-                    reverb_mul(input[channel], in_coef[channel]));
+                    reverb_mul(sample, in_coef[channel]));
         int iir_input_b =
             clamp16(reverb_mul(reverb_read(diff_src[channel], 0), r->vWALL) +
-                    reverb_mul(input[channel], in_coef[channel]));
+                    reverb_mul(sample, in_coef[channel]));
         int previous_a = reverb_read(same_dst[channel], -2);
         int previous_b = reverb_read(diff_dst[channel], -2);
         int inverse_iir = 0x8000 - spu_s16(r->vIIR);
@@ -303,32 +299,48 @@ static void reverb_process_22050(
         mix_a = clamp16(accumulator - reverb_mul(feedback_a, r->vAPF1));
         mix_b = clamp16(feedback_a + reverb_mul(mix_a, r->vAPF1) -
                         reverb_mul(feedback_b, r->vAPF2));
-        output[channel] = clamp16(feedback_b + reverb_mul(mix_b, r->vAPF2));
+        sample = clamp16(feedback_b + reverb_mul(mix_b, r->vAPF2));
         reverb_write(apf1[channel], mix_a);
         reverb_write(apf2[channel], mix_b);
     }
 
-    spu.reverb_cur = (spu.reverb_cur + 2) & 0x7FFFF;
-    if (spu.reverb_cur < ((unsigned)r->rev_work_addr << 3))
-        spu.reverb_cur = (unsigned)r->rev_work_addr << 3;
+    // One channel is calculated per 44.1 kHz tick. Both share a work
+    // cursor, which advances after the right channel calculation.
+    if (channel == 1) {
+        spu.reverb_cur = (spu.reverb_cur + 2) & 0x7FFFF;
+        if (spu.reverb_cur < ((unsigned)r->rev_work_addr << 3))
+            spu.reverb_cur = (unsigned)r->rev_work_addr << 3;
+    }
+    return (short)sample;
+}
+
+// Hardware half-band filter, documented in the SPU reverb specification.
+// Input is decimated by two; output inserts zeroes and doubles filter gain.
+static const short reverb_fir[39] = {
+    -1,0,2,0,-10,0,35,0,-103,0,266,0,-616,0,1332,0,-2960,0,
+    10246,16384,10246,0,-2960,0,1332,0,-616,0,266,0,-103,0,
+    35,0,-10,0,2,0,-1
+};
+
+static int reverb_filter(const short history[64], unsigned cursor, int shift) {
+    int sum = 0;
+    for (unsigned tap=0;tap<39;++tap)
+        sum += reverb_fir[tap] * history[(cursor-tap)&63];
+    return clamp16(sum >> shift);
 }
 
 static void reverb_tick(int input_left, int input_right, int output[2]) {
-    if (!spu.reverb_phase) {
-        spu.reverb_input[0] = clamp16(input_left);
-        spu.reverb_input[1] = clamp16(input_right);
-        output[0] = spu.reverb_previous[0];
-        output[1] = spu.reverb_previous[1];
-    } else {
-        short next[2];
-        reverb_process_22050((spu.reverb_input[0] + input_left) / 2,
-                             (spu.reverb_input[1] + input_right) / 2, next);
-        output[0] = (spu.reverb_previous[0] + next[0]) / 2;
-        output[1] = (spu.reverb_previous[1] + next[1]) / 2;
-        spu.reverb_previous[0] = next[0];
-        spu.reverb_previous[1] = next[1];
-    }
-    spu.reverb_phase ^= 1;
+    unsigned cursor=spu.reverb_phase;
+    spu.reverb_input[0][cursor]=clamp16(input_left);
+    spu.reverb_input[1][cursor]=clamp16(input_right);
+    spu.reverb_output[0][cursor]=0;
+    spu.reverb_output[1][cursor]=0;
+    unsigned channel=(cursor&1)?0:1;
+    int downsampled=reverb_filter(spu.reverb_input[channel],cursor,15);
+    spu.reverb_output[channel][cursor]=reverb_process_channel(channel,downsampled);
+    output[0]=reverb_filter(spu.reverb_output[0],cursor,14);
+    output[1]=reverb_filter(spu.reverb_output[1],cursor,14);
+    spu.reverb_phase=(cursor+1)&63;
 }
 
 // generate one frame at 44100hz with voices mix, cd playback and volume control
@@ -398,6 +410,12 @@ static void spu_tick(short* out) {
         }
         if (pitch > 0x4000)
             pitch = 0x4000;
+        if (spu.voice[v].delay_ticks > 1) {
+            spu.voice[v].delay_ticks--;
+            rxx->voice[v].volumex = 0;
+            previous_sample = 0;
+            continue;
+        }
         short s = spu_voice_step(&spu.voice[v], pitch, spu.ram);
         if (rxx->noise_mode[word] & bit)
             s = (short)spu.noise_level;
