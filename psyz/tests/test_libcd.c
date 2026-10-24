@@ -807,7 +807,9 @@ ZTEST(libcd_playback, cdda_playback) {
     // Reverse Psyz_AudioLock
     Psyz_AudioUnlock();
 
-    for (i = 0; i < frame_count / 2; i++) {
+    // The direct master gain latches after the first sample.
+    zassert_s16_eq(0,out[0]);zassert_s16_eq(0,out[1]);
+    for (i = 1; i < frame_count / 2; i++) {
         if (out[i * 2 + 0] != 0x2FFE) {
             zprintf("frame %d left channel unexpected value\n", i);
         }

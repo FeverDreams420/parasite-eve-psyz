@@ -88,6 +88,8 @@ typedef struct {
     short gwin[4];  // GAUSS interpolation window
     u8 gpos;        // index to next decoded sample in gwin
     u8 active;
+    u8 key_on_pending;    // latch a retrigger after the current output sample
+    short volume_current[2]; // VOLL/VOLR latch for the current sample
     u8 needs_decode;
     u8 noise_mode;       // NON bypasses the ADPCM end-triggered envelope stop
     int env_vol;          // mirrors SPU_VOICE_REG::volumex
@@ -109,7 +111,7 @@ static inline void spu_voice_key_on(
     vs->needs_decode = 1;
     // sinc = pitch << 4; pitch=0x1000 -> sinc=0x10000 (1.0 in 16.16)
     unsigned pitch = reg->pitch;
-    vs->sinc = (pitch > 0x4000 ? 0x4000 : pitch) << 4;
+    vs->sinc = (pitch > 0x3FFF ? 0x3FFF : pitch) << 4;
 
     // The first interpolation window contains the first four decoded samples.
     // Decode/playback phase remains frozen during the key-on pipeline delay.
@@ -118,6 +120,7 @@ static inline void spu_voice_key_on(
     memset(vs->gwin, 0, sizeof(vs->gwin));
 
     vs->active = 1;
+    vs->key_on_pending = 0;
 
     // reset the envelope to a fresh attack from zero
     vs->adsr_lo = reg->adsr[0];
@@ -173,7 +176,7 @@ static inline int spu_voice_decode_one_sample(VoiceState* vs, const u8* ram) {
 static inline short spu_voice_step(
     VoiceState* vs, unsigned pitch_reg, const u8* ram) {
     // for pitch changes during voice on, enable vibrato or bends
-    unsigned pitch = pitch_reg > 0x4000 ? 0x4000 : pitch_reg;
+    unsigned pitch = pitch_reg > 0x3FFF ? 0x3FFF : pitch_reg;
     vs->sinc = pitch << 4;
 
     // consume decoded samples until the pitch counter is below 1.0

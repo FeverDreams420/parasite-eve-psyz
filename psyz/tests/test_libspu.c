@@ -65,6 +65,45 @@ ZTEST(spu, GaussianHardwareImpulse) {
 }
 #endif
 
+ZTEST(spu, VoiceGainLatchReference) {
+    // Synthetic ramp rendered by independent Beetle PSX SPU 9164674, with
+    // frontend attenuation removed. Gain writes take effect after this tick.
+    static const unsigned char ramp[16]={0,7,0x10,0x32,0x54,0x76,0x77,0x65,
+        0x43,0x21,0xef,0xcd,0xab,0x89,0x88,0x9a};
+    static const short expected[128]={
+        -11464,-11464,-8059,-4030,-10377,-5189,-12696,-6348,
+        -15006,-7503,-16290,-8145,-16192,-8096,-13524,-6762,
+        -12333,-6167,-1402,-701,2424,1211,4742,2370,
+        7061,3530,9387,4693,11705,5852,13831,6915,
+        14275,7137,13308,6653,11045,5522,9510,4754,
+        7171,3585,4180,2089,3090,1544,-1347,-674,
+        -4314,-2157,-6641,-3321,-8959,-4480,-11278,-5639,
+        -13596,-6798,-15779,-7890,-16317,-8159,-15535,-7768,
+        -13055,-6528,-4357,-1090,422,105,1663,415,
+        2821,705,3985,996,5144,1286,6303,1575,
+        7098,1774,7118,1779,5983,1495,5646,1411,
+        3831,957,3464,866,1518,379,988,247,
+        -1404,-351,-2612,-653,-3771,-943,-4930,-1233,
+        -6089,-1523,-7252,-1813,-8103,-2026,-8148,-2037,
+        -7118,-1780,-6520,-1630,-1848,-462,953,238,
+        2112,528,3276,819,4435,1108,5594,1398,
+    };
+    short warmup[1024],pcm[128];
+    Psyz_SpuReset(0);Psyz_SpuMemWrite(0x1000,ramp,sizeof(ramp));
+    Psyz_SpuWrite(0x1AA,0xC000);
+    Psyz_SpuWrite(0x180,0x3FFF);Psyz_SpuWrite(0x182,0x3FFF);
+    Psyz_SpuWrite(0x10,0x3FFF);Psyz_SpuWrite(0x12,0x3FFF);
+    Psyz_SpuWrite(0x14,0x1234);Psyz_SpuWrite(0x16,0x200);
+    Psyz_SpuWrite(0x18,0x00FF);Psyz_SpuWrite(0x1A,0x1FC0);
+    Psyz_SpuWrite(0x1E,0x200);Psyz_SpuWrite(0x188,2);
+    Psyz_SpuPullSamples(warmup,512);
+    Psyz_SpuWrite(0x10,0x2000);Psyz_SpuWrite(0x12,0x1000);
+    Psyz_SpuPullSamples(pcm,32);
+    Psyz_SpuWrite(0x180,0x2000);Psyz_SpuWrite(0x182,0x1000);
+    Psyz_SpuPullSamples(pcm+64,32);
+    for(unsigned i=0;i<128;++i)zexpect_s32_eq(expected[i],pcm[i]);
+}
+
 ZTEST(spu, SetTransferAddrMasksToRamRange) {
     Psyz_SpuSetTransferAddr(PSYZ_SPU_RAM_SIZE + 0x10);
     zexpect_u32_eq(0x10, Psyz_SpuGetTransferAddr());
@@ -498,17 +537,19 @@ ZTEST(spu, GaussianKeyOnPitchPhase) {
 #ifdef __psyz
 ZTEST(spu, GaussianFmReference) {
     // Independent Beetle PSX 9164674 output without frontend attenuation.
-    // Check two-second sustained and key-off cases. Spaced exact windows
+    // Check sustain, key-off, retrigger and clipping. Spaced exact windows
     // catch errors that accumulate FM carrier phase over many samples.
     static const unsigned char block[16]={
         0,7,0x10,0x32,0x54,0x76,0x77,0x65,0x43,0x21,
         0xef,0xcd,0xab,0x89,0x88,0x9a
     };
-    static const unsigned starts[2][6]={
+    static const unsigned starts[4][6]={
         {0,256,8192,32768,65536,88184},
-        {29998,30016,30128,32768,65536,88184}
+        {29998,30016,30128,32768,65536,88184},
+        {29998,30016,30128,32768,65536,88184},
+        {0,256,8192,32768,65536,88184}
     };
-    static const short reference[2][6][16]={
+    static const short reference[4][6][16]={
       {
         {0,0,0,0,0,0,5140,17768,28513,22290,9104,-8376,-22718,-32639,-21173,9105},
         {-32615,-23131,10457,24636,26380,14116,5729,-10286,-19397,-27126,-32221,-32613,-30309,-26602,-26131,-26217},
@@ -525,8 +566,24 @@ ZTEST(spu, GaussianFmReference) {
         {-7333,-15002,-22664,-30294,-32609,-26105,-2514,7971,15635,23297,28522,24707,19719,12550,5203,-8119},
         {-25802,-32357,-31049,-24146,3425,11094,18756,26390,28515,22048,14283,6503,-1805,-11241,-18903,-26583},
       },
+      {
+        {6960,6250,5203,3718,-8931,-16594,-24257,-31609,-32275,-25497,5518,17386,28471,22428,6008,-11640},
+        {-25765,4928,14059,21481,27141,28547,28101,25278,23112,22649,22618,22430,22084,22242,14338,5479},
+        {-18596,5709,15349,26063,25835,14224,-1805,-17916,-31703,-26260,4482,15460,25600,28433,22186,15684},
+        {-31299,-26111,6060,19011,28459,22064,14121,6041,-2791,-9266,-13409,-16466,-18441,-19333,-19413,-19445},
+        {-11385,-13855,-15225,-15559,-15591,-15910,-17470,-20673,-28607,-32620,-25710,6283,18676,28546,19337,6052},
+        {-30978,-32246,-31812,-22856,6123,17163,28241,22248,7050,-9808,-23620,-32631,-24940,6458,15970,25050},
+      },
+      {
+        {0,0,0,0,0,0,6527,23551,22049,5972,-13189,-29503,-26118,9105,25419,22049},
+        {25030,10933,-9872,-26185,-29113,5789,21306,28012,14890,6241,-6872,-13775,-19110,-22919,-25182,-25930},
+        {15525,13556,6853,6015,6140,6152,6252,4728,-4858,-16450,-29384,-27158,6841,23154,23458,8591},
+        {7956,24270,22318,6714,-12022,-27954,-27761,3208,15396,24397,28544,26181,22088,22132,20278,20020},
+        {-12819,-17852,-21325,-23285,-23763,-23811,-24257,-26456,-30856,-29630,1784,16542,28548,14726,-2726,-20322},
+        {22436,24413,27141,26380,14115,-227,-18505,-32592,-13303,14425,28509,18007,1558,-18505,-32507,-26077},
+      },
     };
-    for(unsigned pass=0;pass<2;++pass) {
+    for(unsigned pass=0;pass<4;++pass) {
         Psyz_SpuReset(0);Psyz_SpuMemWrite(0x1000,block,sizeof(block));
         Psyz_SpuWrite(0x1AA,0xC000);
         Psyz_SpuWrite(0x180,0x3FFF);Psyz_SpuWrite(0x182,0x3FFF);
@@ -537,17 +594,19 @@ ZTEST(spu, GaussianFmReference) {
         for(unsigned voice=0;voice<2;++voice) {
             unsigned base=voice*16;
             Psyz_SpuWrite(base,voice?0x3FFF:0);Psyz_SpuWrite(base+2,voice?0x3FFF:0);
-            Psyz_SpuWrite(base+4,voice?0x1E12:0x1234);Psyz_SpuWrite(base+6,0x200);
+            Psyz_SpuWrite(base+4,voice?(pass==3?0x2A88:0x1E12):0x1234);Psyz_SpuWrite(base+6,0x200);
             Psyz_SpuWrite(base+8,0x00FF);Psyz_SpuWrite(base+10,0x1FC0);
             Psyz_SpuWrite(base+14,0x200);
         }
         Psyz_SpuWrite(0x188,3);
         for(unsigned cursor=0;cursor<88200;) {
             unsigned frames=88200-cursor;short pcm[256];
-            if(pass && cursor==30000) {
+            if(pass==1 && cursor==30000) {
                 Psyz_SpuWrite(0x18,0x0CFF);
                 Psyz_SpuWrite(0x18C,1); // release the muted modulator only
             }
+            if(pass==2 && cursor==30000)
+                Psyz_SpuWrite(0x188,1); // retrigger the active modulator only
             if(frames>128)frames=128;
             if(pass && cursor<30000 && frames>30000-cursor)frames=30000-cursor;
             Psyz_SpuPullSamples(pcm,(int)frames);
@@ -1477,7 +1536,7 @@ static bool all_zero(const unsigned char* p, size_t n) {
     return true;
 }
 
-// Work-RAM regression snapshot for the corrected Gaussian/pipeline/FIR path.
+// Work-RAM regression snapshot for the corrected Gaussian/pipeline/FIR and reverb fractional precision.
 // This snapshot is generated by PsyZ, not captured from hardware. Independent
 // hardware-data checks are GaussianHardwareImpulse and ReverbHardwareFirImpulse;
 // GaussianKeyOnPitchPhase also compares an independently implemented SPU.
@@ -1513,7 +1572,7 @@ ZTEST(spu, ReverbHardwareFirImpulse) {
     Psyz_SpuWrite(0x184,0);Psyz_SpuWrite(0x186,0x7FFF);
     Psyz_SpuPullSamples(pcm,64);
     for (unsigned frame=0;frame<64;++frame) {
-        int expected=frame<39?coefficients[frame]:0;
+        int expected=frame>0 && frame<39?coefficients[frame]:0; // initial gain latch
         expected=(expected*32767)>>15;
         expected=(expected*32766)>>15;
         zexpect_s32_eq(0,pcm[frame*2]);
