@@ -27,6 +27,8 @@ static struct {
 
     unsigned reverb_cur;
     int reverb_phase;
+    int noise_timer;
+    u16 noise_level;
     short reverb_input[2];
     short reverb_previous[2];
 
@@ -361,18 +363,51 @@ static void spu_tick(short* out) {
         spu.cd_ring_count--;
     }
 
+    // One shared noise generator runs at the SPUCNT clock, independently
+    // of voice pitch. The feedback includes the inverted bit in the SPU LFSR.
+    spu.noise_timer -= 4 + ((spucnt >> 8) & 3);
+    if (spu.noise_timer < 0) {
+        unsigned level = spu.noise_level;
+        unsigned feedback = ((level >> 15) ^ (level >> 12) ^
+                             (level >> 11) ^ (level >> 10) ^ 1) & 1;
+        spu.noise_level = (u16)((level << 1) | feedback);
+        int period = 0x20000 >> ((spucnt >> 10) & 15);
+        spu.noise_timer += period;
+        if (spu.noise_timer < 0)
+            spu.noise_timer += period;
+    }
+
     // decode+resample, scale volume by ADSR envelope, then mix voices
-    short v1_sample = 0, v3_sample = 0;
+    short v1_sample = 0, v3_sample = 0, previous_sample = 0;
     for (int v = 0; v < PSYZ_SPU_NUM_VOICES; v++) {
-        if (!spu.voice[v].active)
+        if (!spu.voice[v].active) {
+            previous_sample = 0;
             continue;
-        short s = spu_voice_step(&spu.voice[v], rxx->voice[v].pitch, spu.ram);
+        }
+        // AKAO changes attack/release on voices that are already playing.
+        // ADSR registers remain live after key-on, like pitch and volume.
+        spu.voice[v].adsr_lo = rxx->voice[v].adsr[0];
+        spu.voice[v].adsr_hi = rxx->voice[v].adsr[1];
+        unsigned pitch = rxx->voice[v].pitch;
+        unsigned word = (unsigned)v >> 4;
+        unsigned bit = 1u << (v & 15);
+        if (v && (rxx->chan_fm[word] & bit)) {
+            // FM uses the preceding voice after ADSR, before stereo volume.
+            int modulated = ((short)pitch * (previous_sample + 32768)) >> 15;
+            pitch = (u16)modulated;
+        }
+        if (pitch > 0x4000)
+            pitch = 0x4000;
+        short s = spu_voice_step(&spu.voice[v], pitch, spu.ram);
+        if (rxx->noise_mode[word] & bit)
+            s = (short)spu.noise_level;
         spu_voice_envelope_step(&spu.voice[v]);
         if (spu.voice[v].env_state == ADSR_OFF) {
             s = 0;
         }
         rxx->voice[v].volumex = (unsigned short)spu.voice[v].env_vol;
         s = (short)(((int)s * spu.voice[v].env_vol) >> 15);
+        previous_sample = s;
         if (v == 1) {
             v1_sample = s;
         } else if (v == 3) {
@@ -408,8 +443,10 @@ static void spu_tick(short* out) {
         right_sum += (cd_right * rxx->cd_vol.right) >> 15;
     }
 
-    out[0] = clamp16((left_sum * clamp15(rxx->main_vol.left)) >> 14);
-    out[1] = clamp16((right_sum * clamp15(rxx->main_vol.right)) >> 14);
+    // The SPU saturates the mixed bus before applying signed master volume.
+    // This also bounds the product when many loud voices overlap.
+    out[0] = (short)((clamp16(left_sum) * voice_vol(rxx->main_vol.left)) >> 15);
+    out[1] = (short)((clamp16(right_sum) * voice_vol(rxx->main_vol.right)) >> 15);
 
     // Capture buffers back to SPU RAM, as per real hardware
     write_capture(0, (short)cd_left);

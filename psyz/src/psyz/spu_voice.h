@@ -106,9 +106,7 @@ static inline void spu_voice_key_on(
     vs->needs_decode = 1;
     // sinc = pitch << 4; pitch=0x1000 -> sinc=0x10000 (1.0 in 16.16)
     unsigned pitch = reg->pitch;
-    vs->sinc = (pitch & 0x3FFF) << 4;
-    if (vs->sinc == 0)
-        vs->sinc = 1;
+    vs->sinc = (pitch > 0x4000 ? 0x4000 : pitch) << 4;
 
     // Start spos at 1.0 so the first voice_step consumes exactly one sample.
     // The gauss window stays mostly zero-padded for several ticks, producing
@@ -173,8 +171,8 @@ static inline int spu_voice_decode_one_sample(VoiceState* vs, const u8* ram) {
 static inline short spu_voice_step(
     VoiceState* vs, unsigned pitch_reg, const u8* ram) {
     // for pitch changes during voice on, enable vibrato or bends
-    unsigned pitch = pitch_reg & 0x3FFF;
-    vs->sinc = pitch ? pitch << 4 : 1;
+    unsigned pitch = pitch_reg > 0x4000 ? 0x4000 : pitch_reg;
+    vs->sinc = pitch << 4;
 
     // consume decoded samples until the pitch counter is below 1.0
     while (vs->spos >= 0x10000) {
