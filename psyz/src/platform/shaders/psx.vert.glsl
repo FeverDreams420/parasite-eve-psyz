@@ -7,6 +7,7 @@ layout(location = 3) in uvec4 twin; // SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4
 layout(location = 4) in vec2 polygonUV;
 layout(location = 5) in vec3 polygonRGB;
 layout(location = 6) in vec3 pgxpPos;
+layout(location = 7) in vec4 atlasBounds;
 
 layout(set = 1, binding = 0) uniform UBO { vec4 drawOffset; };
 
@@ -24,8 +25,12 @@ layout(location = 9) flat out uint dither;      // 1 when this primitive dithers
 layout(location = 10) flat out ivec2 pageBase;   // texture page origin, in VRAM pixels
 layout(location = 11) flat out uvec4 texWindow;  // GP0(E2h) as {and.xy, or.zw}
 layout(location = 12) flat out uint polygon;
+layout(location = 13) flat out uint model;
+layout(location = 14) flat out vec4 uvBounds;
 
 void main() {
+    model = (tex.w & 0x1000u) != 0u ? 1u : 0u;
+    uvBounds = atlasBounds;
     polygon = (tex.w & 0x2000u) != 0u ? 1u : 0u;
     bool usePgxp = polygon != 0u && drawOffset.z != 0.0 && pgxpPos.z > 0.0;
     bool hiRes = drawOffset.w != 0.0;

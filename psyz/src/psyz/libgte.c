@@ -1828,6 +1828,8 @@ typedef struct {
 #define PGXP_SXY_WAYS 2u
 
 static int pgxp_active = 0;
+static int pgxp_culling = 1;
+void Psyz_PgxpSetCulling(int enabled) { pgxp_culling = enabled != 0; }
 static unsigned int pgxp_frame_gen = 1;
 static int pgxp_matrix_valid = 0;
 static double pgxp_rot[3][3];
@@ -1991,7 +1993,7 @@ int Psyz_PgxpLookupVertex(
 int Psyz_GtePgxpNclip3(
     const void* s0, unsigned int xy0, const void* s1, unsigned int xy1,
     const void* s2, unsigned int xy2, int int_area) {
-    if (!pgxp_active) {
+    if (!pgxp_active || !pgxp_culling) {
         return int_area;
     }
     float x0, y0, w0, x1, y1, w1, x2, y2, w2;
@@ -2013,7 +2015,7 @@ int Psyz_GtePgxpNclip4(
     const void* s0, unsigned int xy0, const void* s1, unsigned int xy1,
     const void* s2, unsigned int xy2, const void* s3, unsigned int xy3,
     int int_area) {
-    if (!pgxp_active) {
+    if (!pgxp_active || !pgxp_culling) {
         return int_area;
     }
     float x0, y0, w0, x1, y1, w1, x2, y2, w2, x3, y3, w3;
@@ -2048,6 +2050,12 @@ void Psyz_GteCopyPgxpSxy(
                      .y = y,
                      .w = w,
                  });
+    } else {
+        // Queue slots are reused within a frame. A plain 2D write must not
+        // inherit metadata from a previous model vertex at the same address.
+        PgxpAddrEntry *set=pgxp_addr_cache[PgxpHashAddr(dst)];
+        for(unsigned i=0;i<PGXP_ADDR_WAYS;++i)
+            if(set[i].addr==(uintptr_t)dst)set[i].gen=0;
     }
 }
 

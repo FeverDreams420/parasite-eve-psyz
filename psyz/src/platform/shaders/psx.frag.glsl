@@ -13,6 +13,8 @@ layout(location = 9) flat in uint dither;
 layout(location = 10) flat in ivec2 pageBase;
 layout(location = 11) flat in uvec4 texWindow;
 layout(location = 12) flat in uint polygon;
+layout(location = 13) flat in uint model;
+layout(location = 14) flat in vec4 uvBounds;
 
 layout(set = 2, binding = 0) uniform sampler2D texVram;
 layout(set = 2, binding = 1) uniform sampler2D texBlend;
@@ -59,20 +61,34 @@ vec3 applyDither(vec3 c) {
     return c5 / 31.0;
 }
 
+vec4 fetchModelTexel(ivec2 position) {
+    uvec2 wrapped=(uvec2(position)&uvec2(255u));
+    ivec2 texel=ivec2((wrapped&texWindow.xy)|texWindow.zw);
+    if (textureMode==1u) return texelFetch(texVram,pageBase+texel,0);
+    uint subPixel=uint(texel.x)&subPixelMask;
+    ivec2 texelPos=ivec2(texel.x>>texelShift,texel.y);
+    uint word16=rgb5551ToU16(texelFetch(texVram,pageBase+texelPos,0));
+    uint index=(word16>>(subPixel*indexShift))&indexMask;
+    ivec2 base=ivec2((clut%64u)*16u,clut/64u);
+    return texelFetch(texVram,base+ivec2(index,0),0);
+}
+
 void main() {
-    vec4 texColor;
-    if (textureMode == 0u) { // untextured
-        texColor = vec4(1, 1, 1, 2);
-    } else if (textureMode == 1u) { // 16-bit bitmap
-        texColor = texelFetch(texVram, pageBase + ivec2(resolveTexel()), 0);
-    } else { // indexed
-        ivec2 texel = ivec2(resolveTexel());
-        uint subPixel = uint(texel.x) & subPixelMask;
-        ivec2 texelPos = ivec2(texel.x >> texelShift, texel.y);
-        uint word16 = rgb5551ToU16(texelFetch(texVram, pageBase + texelPos, 0));
-        uint colorIdx = (word16 >> (subPixel * indexShift)) & indexMask;
-        ivec2 clutBase = ivec2((clut % 64u) * 16u, clut / 64u);
-        texColor = texelFetch(texVram, clutBase + ivec2(colorIdx, 0), 0);
+    vec4 texColor=textureMode==0u ? vec4(1,1,1,2) :
+        fetchModelTexel(ivec2(resolveTexel()));
+    if (passMode.w!=0u && model!=0u && textureMode!=0u) {
+        vec2 pos=rawUV-vec2(0.5);
+        ivec2 lo=ivec2(uvBounds.xy),hi=ivec2(uvBounds.zw);
+        ivec2 origin=ivec2(floor(pos));vec2 weight=fract(pos);
+        vec4 a=fetchModelTexel(clamp(origin,lo,hi));
+        vec4 b=fetchModelTexel(clamp(origin+ivec2(1,0),lo,hi));
+        vec4 c=fetchModelTexel(clamp(origin+ivec2(0,1),lo,hi));
+        vec4 d=fetchModelTexel(clamp(origin+ivec2(1,1),lo,hi));
+        // Never mix transparency or different PS1 blend/mask classes. Keep
+        // authored cutouts and neighbouring atlas regions from bleeding.
+        if (a!=vec4(0) && b!=vec4(0) && c!=vec4(0) && d!=vec4(0) &&
+            a.a==b.a && a.a==c.a && a.a==d.a)
+            texColor=mix(mix(a,b,weight.x),mix(c,d,weight.x),weight.y);
     }
     // check for full transparency
     if (texColor == vec4(0, 0, 0, 0)) {

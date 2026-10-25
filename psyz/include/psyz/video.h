@@ -217,6 +217,13 @@ int Psyz_VideoSetGeometryCorrection(int enabled);
  */
 int Psyz_VideoGetGeometryCorrection(void);
 
+/** Display-only 4x SSAA (twice each axis). Native VRAM remains unchanged. */
+int Psyz_VideoSetAntialiasing(int enabled);
+int Psyz_VideoGetAntialiasing(void);
+/** Palette-aware bilinear filtering for tagged 3D models only. */
+int Psyz_VideoSetModelFiltering(int enabled);
+int Psyz_VideoGetModelFiltering(void);
+
 /**
  * @brief Synchronize with vertical blank
  *

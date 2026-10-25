@@ -34,11 +34,13 @@ typedef struct {
     float polygon_uv[2];
     float polygon_rgb[3];
     float pgxp_pos[3];
+    float uv_bounds[4];
 } Vertex;
 
 // ===== SDL3 reserved TPAGE flags, invalid on real hardware =====
 #define TPAGE_NOTEXTURE 0x8000 // flag untextured poly
 #define TPAGE_DITHER 0x4000    // flag a dithered primitive
+#define TPAGE_MODEL 0x1000   // projection provenance: model geometry only
 #define TPAGE_POLYGON 0x2000   // PS1 integer polygon sampling
 
 #define VRGBA(p) (*(unsigned int*)(&((p).r)))

@@ -1,5 +1,6 @@
 #include <psyz.h>
 #include <libgpu.h>
+#include <psyz/gte.h>
 #include "../../../decomp/src/libgpu/libgpu_private.h"
 #include <psyz/log.h>
 #include "../draw.h"
@@ -198,6 +199,7 @@ static void GPU_Enqueue(u_long* packets) {
                 u32* prim_data = (u32*)env->code;
                 for (u_long i = 0; i < env->len; i++) {
                     queue_buf[queue_len + i] = prim_data[i];
+                    Psyz_GteCopyPgxpSxy(&prim_data[i], &queue_buf[queue_len+i], prim_data[i]);
                 }
             } else if (env->len > 0) {
                 memcpy(queue_buf + queue_len, env->code,
@@ -236,9 +238,14 @@ static int psyz_cwb(u32* data, s32 n) {
      * primitive fields, native command words for DR_* packets. It must
      * also dispatch E1/E3/etc commands rather than treating them as shapes. */
     if (sizeof(u_long) == 8 && is_packed_command_stream(data, n)) {
-        for (int i = 0; i < n; ++i) queue_buf[i] = data[i];
+        for (int i = 0; i < n; ++i) {
+            queue_buf[i] = data[i];
+            Psyz_GteCopyPgxpSxy(&data[i], &queue_buf[i], data[i]);
+        }
     } else {
         memcpy(queue_buf, data, (size_t)n * sizeof(u_long));
+        for (int i=0;i<n;++i)
+            Psyz_GteCopyPgxpSxy((u_long*)data+i,&queue_buf[i],(unsigned)queue_buf[i]);
     }
     queue_len = n;
     return Psyz_GpuExeque();

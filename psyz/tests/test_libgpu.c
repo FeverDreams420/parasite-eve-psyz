@@ -131,6 +131,87 @@ static void SetPolyF4Img(POLY_FT4* poly, int x, int y, int w, int h, int u,
 ZTEST_SETUP(gpu) { gpu_setup(); }
 ZTEST_TEARDOWN(gpu) { gpu_teardown(); }
 
+ZTEST(gpu, supersampling_at_max_resolution_preserves_requested_size) {
+#if defined(__psyz) && !defined(__PSP__)
+    const char *headless=getenv("PSYZ_HEADLESS");
+    if(headless&&!strcmp(headless,"1"))return;
+    DISPENV disp;SetDefDispEnv(&disp,0,224,320,224);disp.screen.h=224;PutDispEnv(&disp);
+    Psyz_VideoSetAntialiasing(1);Psyz_VideoSetInternalResolution(8);
+    zassert_s32_eq(8,Psyz_VideoGetInternalResolution());
+    RECT clear={0,224,320,224};ClearImage(&clear,240,0,0);
+    int w,h;unsigned char *image=Psyz_VideoAllocRenderedFrame(&w,&h);
+    zassert_ptr_ne(NULL,image);zassert_s32_eq(2560,w);zassert_s32_eq(1792,h);
+    for(int y=0;y<h;y+=97)for(int x=0;x<w;x+=83){
+        zassert_s32_eq(image[0],image[(y*w+x)*3]);
+        zassert_s32_eq(0,image[(y*w+x)*3+1]);zassert_s32_eq(0,image[(y*w+x)*3+2]);
+    }
+    free(image);Psyz_VideoSetAntialiasing(0);Psyz_VideoSetInternalResolution(1);
+#endif
+}
+
+ZTEST(gpu, optional_model_filter_and_ssaa_preserve_native_vram_and_text) {
+#if defined(__psyz) && !defined(__PSP__)
+    const char *headless=getenv("PSYZ_HEADLESS");
+    if(headless&&!strcmp(headless,"1"))return;
+    extern void Psyz_PgxpNextFrame(void);
+    extern void Psyz_GteDataWrite(unsigned int,unsigned int);
+    extern void Psyz_GteCtrlWrite(unsigned int,unsigned int);
+    extern void Psyz_GteCommand(unsigned int);
+    extern void Psyz_GteStoreSxyTo(unsigned int,void *);
+    u16 texture[16*16],baseline_vram[320*224],native[320*224];
+    for(int i=0;i<16*16;++i)texture[i]=(i&1)?0x001f:0x03e0;
+    RECT atlas={512,0,16,16};LoadImage(&atlas,(u_long*)texture);
+    DISPENV disp;SetDefDispEnv(&disp,0,0,320,224);disp.screen.h=224;PutDispEnv(&disp);
+    DRAWENV draw;SetDefDrawEnv(&draw,0,0,320,224);draw.dtd=0;PutDrawEnv(&draw);
+    Psyz_VideoSetGeometryCorrection(0);Psyz_VideoSetInternalResolution(2);
+    unsigned char *images[5]={0};int width=0,height=0;
+    for(int mode=0;mode<5;++mode){
+        Psyz_VideoSetModelFiltering(mode==1||mode==2||mode==4);
+        Psyz_VideoSetAntialiasing(mode==2||mode==3);
+        zassert_s32_eq(2,Psyz_VideoGetInternalResolution());
+        Psyz_PgxpNextFrame();
+        RECT clear={0,0,320,224};ClearImage(&clear,0,0,0);
+        POLY_FT3 model={0};setPolyFT3(&model);setRGB0(&model,128,128,128);
+        setXY3(&model,16,16,48,21,20,48);setUV3(&model,0,0,15,0,0,15);
+        model.tpage=GetTPage(2,0,512,0);
+        Psyz_GteCtrlWrite(0,4096);Psyz_GteCtrlWrite(1,0);Psyz_GteCtrlWrite(2,4096);
+        Psyz_GteCtrlWrite(3,0);Psyz_GteCtrlWrite(4,4096);
+        Psyz_GteCtrlWrite(5,0);Psyz_GteCtrlWrite(6,0);Psyz_GteCtrlWrite(7,256);
+        Psyz_GteCtrlWrite(24,0);Psyz_GteCtrlWrite(25,0);Psyz_GteCtrlWrite(26,256);
+        const short xy[3][2]={{16,16},{48,21},{20,48}};
+        void *dest[3]={&model.x0,&model.x1,&model.x2};
+        for(int i=0;i<3;++i){
+            Psyz_GteDataWrite(0,(u16)xy[i][0]|((u32)(u16)xy[i][1]<<16));
+            Psyz_GteDataWrite(1,0);Psyz_GteCommand(0x180001);Psyz_GteStoreSxyTo(14,dest[i]);
+        }
+        if(mode==1){
+            extern int Psyz_PgxpLookupVertex(const void*,unsigned int,float*,float*,float*);
+            float fx,fy,fw;unsigned xyword;memcpy(&xyword,&model.x0,4);
+            zassert_s32_eq(1,Psyz_PgxpLookupVertex(&model.x0,xyword,&fx,&fy,&fw));
+        }
+        if(mode==4){termPrim(&model);DrawOTag((OT_TYPE*)&model);DrawSync(0);}
+        else DrawPrim(&model);
+        DR_TPAGE page;SetDrawTPage(&page,0,0,model.tpage);DrawPrim(&page);
+        SPRT text={0};setSprt(&text);setRGB0(&text,128,128,128);
+        setXY0(&text,48,0);setUV0(&text,0,0);setWH(&text,16,16);DrawPrim(&text);
+        images[mode]=Psyz_VideoAllocRenderedFrame(&width,&height);
+        zassert_ptr_ne(NULL,images[mode]);zassert_s32_eq(640,width);zassert_s32_eq(448,height);
+        StoreImage(&clear,(u_long*)native);DrawSync(0);
+        if(!mode)memcpy(baseline_vram,native,sizeof(native));
+        else zassert_s32_eq(0,memcmp(baseline_vram,native,sizeof(native)));
+        for(int y=0;y<32;++y)for(int x=96;x<128;++x)
+            zassert_s32_eq(0,memcmp(images[0]+(y*width+x)*3,images[mode]+(y*width+x)*3,3));
+    }
+    unsigned filtered=0,antialiased=0;
+    for(int i=0;i<width*height*3;++i){filtered+=images[0][i]!=images[1][i];antialiased+=images[1][i]!=images[2][i];}
+    printf("Optional graphics: %u filtered and %u antialiased channels; native VRAM and 2D text unchanged\n",filtered,antialiased);
+    zassert_s32_eq(1,filtered>0);zassert_s32_eq(1,antialiased>0);
+    zassert_s32_eq(0,memcmp(images[1],images[4],(size_t)width*height*3));
+    for(int i=0;i<5;++i)free(images[i]);
+    Psyz_VideoSetAntialiasing(0);Psyz_VideoSetModelFiltering(0);Psyz_VideoSetInternalResolution(1);
+#endif
+}
+
 /* A game may build its OT, wait for two vblanks, then submit that OT. */
 ZTEST(gpu, geometry_metadata_survives_present_before_submission) {
 #if defined(__psyz) && !defined(__PSP__)
@@ -154,6 +235,12 @@ ZTEST(gpu, geometry_metadata_survives_present_before_submission) {
     zassert_s32_eq(1,Psyz_PgxpLookupVertex(&xy,xy,&x,&y,&w));
     VSync(0);VSync(0);
     zassert_s32_eq(1,Psyz_PgxpLookupVertex(&xy,xy,&x,&y,&w));
+    unsigned int recycled=xy,plain=xy;
+    extern void Psyz_GteCopyPgxpSxy(const void*,const void*,unsigned int);
+    Psyz_GteCopyPgxpSxy(&xy,&recycled,xy);
+    zassert_s32_eq(1,Psyz_PgxpLookupVertex(&recycled,recycled,&x,&y,&w));
+    Psyz_GteCopyPgxpSxy(&plain,&recycled,plain);
+    zassert_s32_eq(0,Psyz_PgxpLookupVertex(&recycled,recycled,&x,&y,&w));
     Psyz_PgxpNextFrame();
     zassert_s32_eq(0,Psyz_PgxpLookupVertex(&xy,xy,&x,&y,&w));
     Psyz_VideoSetGeometryCorrection(0);Psyz_VideoSetInternalResolution(1);

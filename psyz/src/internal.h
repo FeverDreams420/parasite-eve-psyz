@@ -55,6 +55,7 @@ void Psyz_KernelPoll(void);
 // Subpixel GTE->GPU coordinate cache for optional geometry correction.
 void Psyz_PgxpSetActive(int active);
 void Psyz_PgxpNextFrame(void);
+void Psyz_PgxpSetCulling(int enabled);
 int Psyz_PgxpLookupVertex(
     const void* packet_sxy_addr, unsigned int sxy, float* x, float* y,
     float* w);

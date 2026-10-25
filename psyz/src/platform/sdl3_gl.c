@@ -800,6 +800,11 @@ unsigned char* Psyz_VideoAllocRenderedFrame(int* w,int* h) {
 
 unsigned Psyz_VideoGetInternalResolution(void) { return internal_res; }
 
+int Psyz_VideoSetAntialiasing(int enabled) { return enabled ? -1 : 0; }
+int Psyz_VideoGetAntialiasing(void) { return 0; }
+int Psyz_VideoSetModelFiltering(int enabled) { return enabled ? -1 : 0; }
+int Psyz_VideoGetModelFiltering(void) { return 0; }
+
 int Psyz_VideoGetGeometryCorrection(void) { return 0; }
 
 int Psyz_VideoSetGeometryCorrection(int enabled) {
