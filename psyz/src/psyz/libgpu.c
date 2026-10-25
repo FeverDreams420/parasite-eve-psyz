@@ -199,7 +199,7 @@ static void GPU_Enqueue(u_long* packets) {
                 u32* prim_data = (u32*)env->code;
                 for (u_long i = 0; i < env->len; i++) {
                     queue_buf[queue_len + i] = prim_data[i];
-                    Psyz_GteCopyPgxpSxy(&prim_data[i], &queue_buf[queue_len+i], prim_data[i]);
+                    Psyz_GteCopyQueuedPgxpSxy(&prim_data[i], &queue_buf[queue_len+i], prim_data[i]);
                 }
             } else if (env->len > 0) {
                 memcpy(queue_buf + queue_len, env->code,
@@ -240,12 +240,12 @@ static int psyz_cwb(u32* data, s32 n) {
     if (sizeof(u_long) == 8 && is_packed_command_stream(data, n)) {
         for (int i = 0; i < n; ++i) {
             queue_buf[i] = data[i];
-            Psyz_GteCopyPgxpSxy(&data[i], &queue_buf[i], data[i]);
+            Psyz_GteCopyQueuedPgxpSxy(&data[i], &queue_buf[i], data[i]);
         }
     } else {
         memcpy(queue_buf, data, (size_t)n * sizeof(u_long));
         for (int i=0;i<n;++i)
-            Psyz_GteCopyPgxpSxy((u_long*)data+i,&queue_buf[i],(unsigned)queue_buf[i]);
+            Psyz_GteCopyQueuedPgxpSxy((u_long*)data+i,&queue_buf[i],(unsigned)queue_buf[i]);
     }
     queue_len = n;
     return Psyz_GpuExeque();

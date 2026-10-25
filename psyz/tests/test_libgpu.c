@@ -189,7 +189,7 @@ ZTEST(gpu, optional_model_filter_and_ssaa_preserve_native_vram_and_text) {
             float fx,fy,fw;unsigned xyword;memcpy(&xyword,&model.x0,4);
             zassert_s32_eq(1,Psyz_PgxpLookupVertex(&model.x0,xyword,&fx,&fy,&fw));
         }
-        if(mode==4){termPrim(&model);DrawOTag((OT_TYPE*)&model);DrawSync(0);}
+        if(mode==4){termPrim(&model);DrawOTag((OT_TYPE*)&model);Psyz_PgxpNextFrame();DrawSync(0);}
         else DrawPrim(&model);
         DR_TPAGE page;SetDrawTPage(&page,0,0,model.tpage);DrawPrim(&page);
         SPRT text={0};setSprt(&text);setRGB0(&text,128,128,128);

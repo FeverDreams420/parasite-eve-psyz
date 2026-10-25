@@ -1813,6 +1813,7 @@ typedef struct {
     uintptr_t addr;
     unsigned int sxy;
     unsigned int gen;
+    unsigned int queued;
     float x, y, w;
 } PgxpAddrEntry;
 
@@ -1849,6 +1850,10 @@ static inline unsigned int PgxpHashSxy(unsigned int sxy) {
 }
 
 void Psyz_PgxpSetActive(int active) {
+    if (pgxp_active && !active) {
+        memset(pgxp_addr_cache, 0, sizeof(pgxp_addr_cache));
+        memset(pgxp_sxy_cache, 0, sizeof(pgxp_sxy_cache));
+    }
     pgxp_active = active != 0;
     if (!pgxp_active) {
         pgxp_matrix_valid = 0;
@@ -1888,7 +1893,7 @@ static inline void PgxpStoreAddr(const void* dst, PgxpSxyEntry entry) {
             replace = w;
             break;
         }
-        if (set[w].gen != pgxp_frame_gen && replace == PGXP_ADDR_WAYS - 1u) {
+        if (set[w].gen != pgxp_frame_gen && !set[w].queued && replace == PGXP_ADDR_WAYS - 1u) {
             replace = w;
         }
     }
@@ -1978,7 +1983,7 @@ int Psyz_PgxpLookupVertex(
         uintptr_t addr = (uintptr_t)packet_sxy_addr;
         const PgxpAddrEntry* aset = pgxp_addr_cache[PgxpHashAddr(packet_sxy_addr)];
         for (unsigned int i = 0; i < PGXP_ADDR_WAYS; ++i) {
-            if (aset[i].gen == pgxp_frame_gen && aset[i].addr == addr &&
+            if ((aset[i].gen == pgxp_frame_gen || aset[i].queued) && aset[i].addr == addr &&
                 aset[i].sxy == sxy) {
                 *x = aset[i].x;
                 *y = aset[i].y;
@@ -2055,9 +2060,25 @@ void Psyz_GteCopyPgxpSxy(
         // inherit metadata from a previous model vertex at the same address.
         PgxpAddrEntry *set=pgxp_addr_cache[PgxpHashAddr(dst)];
         for(unsigned i=0;i<PGXP_ADDR_WAYS;++i)
-            if(set[i].addr==(uintptr_t)dst)set[i].gen=0;
+            if(set[i].addr==(uintptr_t)dst){set[i].gen=0;set[i].queued=0;}
     }
 }
+
+/* OT commands may be consumed a game frame after enqueue. Queue-owned
+ * precision survives the producer's generation, until that queue word is
+ * overwritten. Ordinary model/temporary addresses remain generation-bound. */
+void Psyz_GteCopyQueuedPgxpSxy(const void* src, const void* dst, unsigned int sxy) {
+    Psyz_GteCopyPgxpSxy(src, dst, sxy);
+    if (!pgxp_active || !dst) return;
+    PgxpAddrEntry* set=pgxp_addr_cache[PgxpHashAddr(dst)];
+    for (unsigned i=0;i<PGXP_ADDR_WAYS;++i) {
+        if (set[i].addr==(uintptr_t)dst && set[i].gen==pgxp_frame_gen) {
+            set[i].queued=1;
+            return;
+        }
+    }
+}
+
 
 #define RTP_VERTEX(                                                            \
     sf, lm, x, y, z, f, div, mac1, mac2, mac3, ir1, ir2, ir3, sx, sy, sz)      \
