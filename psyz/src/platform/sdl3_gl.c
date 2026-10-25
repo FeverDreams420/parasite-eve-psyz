@@ -800,6 +800,13 @@ unsigned char* Psyz_VideoAllocRenderedFrame(int* w,int* h) {
 
 unsigned Psyz_VideoGetInternalResolution(void) { return internal_res; }
 
+int Psyz_VideoGetGeometryCorrection(void) { return 0; }
+
+int Psyz_VideoSetGeometryCorrection(int enabled) {
+    (void)enabled;
+    return 0;
+}
+
 int Psyz_VideoSetInternalResolution(unsigned multiplier) {
     if (multiplier < 1) {
         return -1;

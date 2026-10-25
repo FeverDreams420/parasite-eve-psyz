@@ -14,6 +14,13 @@ int Psyz_VideoSetInternalResolution(unsigned multiplier) {
 
 unsigned Psyz_VideoGetInternalResolution(void) { return 1; }
 
+int Psyz_VideoSetGeometryCorrection(int enabled) {
+    (void)enabled;
+    return -1;
+}
+
+int Psyz_VideoGetGeometryCorrection(void) { return 0; }
+
 int Draw_SetHorizontalGrid(
     unsigned int source_width, unsigned int target_width) {
     if (source_width == 0 || target_width == 0) {

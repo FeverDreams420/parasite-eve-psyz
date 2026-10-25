@@ -1,4 +1,7 @@
 #include <assert.h>
+#include <math.h>
+#include <stdint.h>
+#include <string.h>
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
@@ -1806,6 +1809,248 @@ static unsigned clz16(unsigned x) {
 #endif
 
 // Perspective transformation of one vertex into caller locals.
+typedef struct {
+    uintptr_t addr;
+    unsigned int sxy;
+    unsigned int gen;
+    float x, y, w;
+} PgxpAddrEntry;
+
+typedef struct {
+    unsigned int sxy;
+    unsigned int gen;
+    float x, y, w;
+} PgxpSxyEntry;
+
+#define PGXP_ADDR_SETS 8192u
+#define PGXP_ADDR_WAYS 8u
+#define PGXP_SXY_SETS 4096u
+#define PGXP_SXY_WAYS 2u
+
+static int pgxp_active = 0;
+static unsigned int pgxp_frame_gen = 1;
+static int pgxp_matrix_valid = 0;
+static double pgxp_rot[3][3];
+static double pgxp_trans[3];
+static PgxpSxyEntry pgxp_fifo[3];
+static PgxpAddrEntry pgxp_addr_cache[PGXP_ADDR_SETS][PGXP_ADDR_WAYS];
+static PgxpSxyEntry pgxp_sxy_cache[PGXP_SXY_SETS][PGXP_SXY_WAYS];
+
+static inline unsigned int PgxpHashAddr(const void* ptr) {
+    uintptr_t v = (uintptr_t)ptr;
+    return (unsigned int)(((v >> 2) ^ (v >> 14) ^ (v >> 24)) &
+                          (PGXP_ADDR_SETS - 1u));
+}
+
+static inline unsigned int PgxpHashSxy(unsigned int sxy) {
+    return (sxy * 2654435761u) >> 20;
+}
+
+void Psyz_PgxpSetActive(int active) {
+    pgxp_active = active != 0;
+    if (!pgxp_active) {
+        pgxp_matrix_valid = 0;
+    }
+}
+
+void Psyz_PgxpNextFrame(void) {
+    pgxp_frame_gen++;
+    if (pgxp_frame_gen == 0) {
+        memset(pgxp_addr_cache, 0, sizeof(pgxp_addr_cache));
+        memset(pgxp_sxy_cache, 0, sizeof(pgxp_sxy_cache));
+        pgxp_frame_gen = 1;
+    }
+    pgxp_matrix_valid = 0;
+}
+
+void Psyz_GteSetPgxpMatrix(const double rot[3][3], const double trans[3]) {
+    if (!pgxp_active) {
+        return;
+    }
+    memcpy(pgxp_rot, rot, sizeof(pgxp_rot));
+    memcpy(pgxp_trans, trans, sizeof(pgxp_trans));
+    pgxp_matrix_valid = 1;
+}
+
+void Psyz_GteClearPgxpMatrix(void) { pgxp_matrix_valid = 0; }
+
+static inline void PgxpStoreAddr(const void* dst, PgxpSxyEntry entry) {
+    if (!pgxp_active || !dst || entry.gen != pgxp_frame_gen) {
+        return;
+    }
+    uintptr_t addr = (uintptr_t)dst;
+    PgxpAddrEntry* set = pgxp_addr_cache[PgxpHashAddr(dst)];
+    unsigned int replace = PGXP_ADDR_WAYS - 1u;
+    for (unsigned int w = 0; w < PGXP_ADDR_WAYS; ++w) {
+        if (set[w].addr == addr) {
+            replace = w;
+            break;
+        }
+        if (set[w].gen != pgxp_frame_gen && replace == PGXP_ADDR_WAYS - 1u) {
+            replace = w;
+        }
+    }
+    for (unsigned int w = replace; w > 0; --w) {
+        set[w] = set[w - 1u];
+    }
+    set[0] = (PgxpAddrEntry){
+        .addr = addr,
+        .sxy = entry.sxy,
+        .gen = entry.gen,
+        .x = entry.x,
+        .y = entry.y,
+        .w = entry.w,
+    };
+}
+
+static inline PgxpSxyEntry PgxpRecordVertex(
+    int sf, int lm, int vx, int vy, int vz, int sx, int sy) {
+    PgxpSxyEntry out = {0};
+    if (!pgxp_active) {
+        return out;
+    }
+    double fx, fy, fz;
+    if (pgxp_matrix_valid) {
+        fx = pgxp_trans[0] + pgxp_rot[0][0] * vx + pgxp_rot[0][1] * vy +
+             pgxp_rot[0][2] * vz;
+        fy = pgxp_trans[1] + pgxp_rot[1][0] * vx + pgxp_rot[1][1] * vy +
+             pgxp_rot[1][2] * vz;
+        fz = pgxp_trans[2] + pgxp_rot[2][0] * vx + pgxp_rot[2][1] * vy +
+             pgxp_rot[2][2] * vz;
+    } else {
+        fx = (double)M.t[0] +
+             ((double)M.m[0][0] * vx + (double)M.m[0][1] * vy +
+              (double)M.m[0][2] * vz) *
+                 (1.0 / 4096.0);
+        fy = (double)M.t[1] +
+             ((double)M.m[1][0] * vx + (double)M.m[1][1] * vy +
+              (double)M.m[1][2] * vz) *
+                 (1.0 / 4096.0);
+        fz = (double)M.t[2] +
+             ((double)M.m[2][0] * vx + (double)M.m[2][1] * vy +
+              (double)M.m[2][2] * vz) *
+                 (1.0 / 4096.0);
+    }
+    if (!sf) {
+        fx *= 4096.0;
+        fy *= 4096.0;
+    }
+    double min_ir = lm ? 0.0 : -32768.0;
+    double ir1_f = CLAMP(fx, min_ir, 32767.0);
+    double ir2_f = CLAMP(fy, min_ir, 32767.0);
+    double sz_f = CLAMP(fz, 0.0, 65535.0);
+    double h_f = (double)(unsigned short)H;
+    double scale_f = (h_f >= sz_f * 2.0 || sz_f <= 0.0)
+                         ? ((double)0x1FFFF / 65536.0)
+                         : (h_f / sz_f);
+    float sx_f = (float)CLAMP((double)OFX + ir1_f * scale_f, -1024.0, 1023.0);
+    float sy_f = (float)CLAMP((double)OFY + ir2_f * scale_f, -1024.0, 1023.0);
+    float w_f = (float)(sz_f > 1.0 ? sz_f : 1.0);
+    if (sx <= -1024 || sx >= 1023 || sy <= -1024 || sy >= 1023 ||
+        fabsf(sx_f - ((float)sx + 0.5f)) > 16.0f ||
+        fabsf(sy_f - ((float)sy + 0.5f)) > 16.0f) {
+        sx_f = (float)sx + 0.5f;
+        sy_f = (float)sy + 0.5f;
+    }
+    unsigned int sxy = (unsigned int)SXY(sx, sy);
+    PgxpSxyEntry* set = pgxp_sxy_cache[PgxpHashSxy(sxy)];
+    out = (PgxpSxyEntry){
+        .sxy = sxy,
+        .gen = pgxp_frame_gen,
+        .x = sx_f,
+        .y = sy_f,
+        .w = w_f,
+    };
+    set[1] = set[0];
+    set[0] = out;
+    return out;
+}
+
+int Psyz_PgxpLookupVertex(
+    const void* packet_sxy_addr, unsigned int sxy, float* x, float* y,
+    float* w) {
+    if (!pgxp_active) {
+        return 0;
+    }
+    if (packet_sxy_addr) {
+        uintptr_t addr = (uintptr_t)packet_sxy_addr;
+        const PgxpAddrEntry* aset = pgxp_addr_cache[PgxpHashAddr(packet_sxy_addr)];
+        for (unsigned int i = 0; i < PGXP_ADDR_WAYS; ++i) {
+            if (aset[i].gen == pgxp_frame_gen && aset[i].addr == addr &&
+                aset[i].sxy == sxy) {
+                *x = aset[i].x;
+                *y = aset[i].y;
+                *w = aset[i].w;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int Psyz_GtePgxpNclip3(
+    const void* s0, unsigned int xy0, const void* s1, unsigned int xy1,
+    const void* s2, unsigned int xy2, int int_area) {
+    if (!pgxp_active) {
+        return int_area;
+    }
+    float x0, y0, w0, x1, y1, w1, x2, y2, w2;
+    if (Psyz_PgxpLookupVertex(s0, xy0, &x0, &y0, &w0) &&
+        Psyz_PgxpLookupVertex(s1, xy1, &x1, &y1, &w1) &&
+        Psyz_PgxpLookupVertex(s2, xy2, &x2, &y2, &w2)) {
+        float area = x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1);
+        if (area > 1e-4f) {
+            return int_area > 0 ? int_area : 1;
+        }
+        if (area < -1e-4f) {
+            return int_area < 0 ? int_area : -1;
+        }
+    }
+    return int_area;
+}
+
+int Psyz_GtePgxpNclip4(
+    const void* s0, unsigned int xy0, const void* s1, unsigned int xy1,
+    const void* s2, unsigned int xy2, const void* s3, unsigned int xy3,
+    int int_area) {
+    if (!pgxp_active) {
+        return int_area;
+    }
+    float x0, y0, w0, x1, y1, w1, x2, y2, w2, x3, y3, w3;
+    if (Psyz_PgxpLookupVertex(s0, xy0, &x0, &y0, &w0) &&
+        Psyz_PgxpLookupVertex(s1, xy1, &x1, &y1, &w1) &&
+        Psyz_PgxpLookupVertex(s2, xy2, &x2, &y2, &w2) &&
+        Psyz_PgxpLookupVertex(s3, xy3, &x3, &y3, &w3)) {
+        float area012 = x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1);
+        float area132 = x1 * (y3 - y2) + x3 * (y2 - y1) + x2 * (y1 - y3);
+        if (area012 > 1e-4f || (area012 + area132) > 1e-4f) {
+            return int_area > 0 ? int_area : 1;
+        }
+        if (area012 < -1e-4f || (area012 + area132) < -1e-4f) {
+            return int_area < 0 ? int_area : -1;
+        }
+    }
+    return int_area;
+}
+
+void Psyz_GteCopyPgxpSxy(
+    const void* src, const void* dst, unsigned int sxy) {
+    if (!pgxp_active || !dst) {
+        return;
+    }
+    float x = 0.0f, y = 0.0f, w = 0.0f;
+    if (Psyz_PgxpLookupVertex(src, sxy, &x, &y, &w)) {
+        PgxpStoreAddr(
+            dst, (PgxpSxyEntry){
+                     .sxy = sxy,
+                     .gen = pgxp_frame_gen,
+                     .x = x,
+                     .y = y,
+                     .w = w,
+                 });
+    }
+}
+
 #define RTP_VERTEX(                                                            \
     sf, lm, x, y, z, f, div, mac1, mac2, mac3, ir1, ir2, ir3, sx, sy, sz)      \
     do {                                                                       \
@@ -1871,6 +2116,12 @@ static unsigned clz16(unsigned x) {
         SY2 = (short)rt_sy;                                                    \
         SXP = (short)rt_sx;                                                    \
         SYP = (short)rt_sy;                                                    \
+        if (pgxp_active) {                                                     \
+            pgxp_fifo[0] = pgxp_fifo[1];                                       \
+            pgxp_fifo[1] = pgxp_fifo[2];                                       \
+            pgxp_fifo[2] = PgxpRecordVertex(                                   \
+                sf, lm, V0.vx, V0.vy, V0.vz, rt_sx, rt_sy);                    \
+        }                                                                      \
         RTP_STORE_MAC_IR();                                                    \
         RTP_DEPTH(rt_div, FLAG);                                               \
         FLAG_UPDATE_ERROR();                                                   \
@@ -1891,6 +2142,10 @@ static unsigned clz16(unsigned x) {
         SX0 = (short)rt_sx;                                                    \
         SY0 = (short)rt_sy;                                                    \
         (sxy0) = SXY(rt_sx, rt_sy);                                            \
+        if (pgxp_active) {                                                     \
+            pgxp_fifo[0] = PgxpRecordVertex(                                   \
+                sf, lm, V0.vx, V0.vy, V0.vz, rt_sx, rt_sy);                    \
+        }                                                                      \
         RTP_VERTEX(sf, lm, V1.vx, V1.vy, V1.vz, FLAG, rt_div, rt_mac1,         \
                    rt_mac2, rt_mac3, rt_ir1, rt_ir2, rt_ir3, rt_sx, rt_sy,     \
                    rt_sz);                                                     \
@@ -1898,6 +2153,10 @@ static unsigned clz16(unsigned x) {
         SX1 = (short)rt_sx;                                                    \
         SY1 = (short)rt_sy;                                                    \
         (sxy1) = SXY(rt_sx, rt_sy);                                            \
+        if (pgxp_active) {                                                     \
+            pgxp_fifo[1] = PgxpRecordVertex(                                   \
+                sf, lm, V1.vx, V1.vy, V1.vz, rt_sx, rt_sy);                    \
+        }                                                                      \
         RTP_VERTEX(sf, lm, V2.vx, V2.vy, V2.vz, FLAG, rt_div, rt_mac1,         \
                    rt_mac2, rt_mac3, rt_ir1, rt_ir2, rt_ir3, rt_sx, rt_sy,     \
                    rt_sz);                                                     \
@@ -1907,6 +2166,10 @@ static unsigned clz16(unsigned x) {
         SXP = (short)rt_sx;                                                    \
         SYP = (short)rt_sy;                                                    \
         (sxy2) = SXY(rt_sx, rt_sy);                                            \
+        if (pgxp_active) {                                                     \
+            pgxp_fifo[2] = PgxpRecordVertex(                                   \
+                sf, lm, V2.vx, V2.vy, V2.vz, rt_sx, rt_sy);                    \
+        }                                                                      \
         RTP_STORE_MAC_IR();                                                    \
         RTP_DEPTH(rt_div, FLAG);                                               \
         FLAG_UPDATE_ERROR();                                                   \
@@ -2951,6 +3214,18 @@ unsigned int Psyz_GteDataRead(unsigned idx) {
         return LZCR;
     default:
         return 0;
+    }
+}
+
+void Psyz_GteStoreSxyTo(unsigned reg, void* dst) {
+    unsigned int word = Psyz_GteDataRead(reg);
+    memcpy(dst, &word, 4);
+    if (pgxp_active && reg >= 12u && reg <= 15u) {
+        unsigned int fifo_idx = reg == 15u ? 2u : (reg - 12u);
+        PgxpSxyEntry entry = pgxp_fifo[fifo_idx];
+        if (entry.gen == pgxp_frame_gen && entry.sxy == word) {
+            PgxpStoreAddr(dst, entry);
+        }
     }
 }
 

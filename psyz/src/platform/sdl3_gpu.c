@@ -76,6 +76,8 @@ static SDL_GPUSampler* vram_sampler = NULL;
 static SDL_GPUTexture* scaled_vram_render = NULL;
 static unsigned internal_res = 1;
 static unsigned set_internal_res = 1;
+static bool geometry_correction = false;
+static bool set_geometry_correction = false;
 static SDL_GPUBuffer* vbuf = NULL;
 static SDL_GPUBuffer* ibuf = NULL;
 static SDL_GPUBuffer* clear_vbuf = NULL;
@@ -99,6 +101,9 @@ PsyzOverlayInitCB_SDL3GPU Psyz_OverlayInit_SDL3GPU(
     PsyzOverlayInitCB_SDL3GPU cb) {
     const PsyzOverlayInitCB_SDL3GPU prev = overlay_init_cb;
     overlay_init_cb = cb;
+    if (is_platform_init_successful && cb && sdl3_window && device) {
+        cb(sdl3_window, device);
+    }
     return prev;
 }
 
@@ -230,6 +235,9 @@ static SDL_GPUGraphicsPipeline* CreatePsxPipeline(
         {.location = 5, .buffer_slot = 0,
          .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
          .offset = offsetof(Vertex, polygon_rgb)},
+        {.location = 6, .buffer_slot = 0,
+         .format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+         .offset = offsetof(Vertex, pgxp_pos)},
     };
     // the shader outputs alpha 0 on B-F texels and alpha 1 on opaque ones
     static const SDL_GPUColorTargetBlendState blend[BLEND_COUNT] = {
@@ -562,7 +570,7 @@ static bool PlatformBackend_SetDriverVsync(bool enable) {
 static void UpdateScissor(void);
 
 static SDL_GPUTexture* GetRenderTarget(void) {
-    return internal_res <= 1 ? vram_render : scaled_vram_render;
+    return scaled_vram_render ? scaled_vram_render : vram_render;
 }
 
 static SDL_Rect vram_dirty = {0, 0, 0, 0};
@@ -593,7 +601,7 @@ static void ResetVramDirty(void) { vram_dirty = (SDL_Rect){0, 0, 0, 0}; }
 
 // mirror a native VRAM region into the scaled render target
 static void SyncNativeVramToScaled(int x, int y, int w, int h) {
-    if (internal_res <= 1 || !scaled_vram_render || w <= 0 || h <= 0) {
+    if (!scaled_vram_render || w <= 0 || h <= 0) {
         return;
     }
     SDL_GPUCommandBuffer* cmd = AcquireCmd();
@@ -668,36 +676,39 @@ static unsigned AdjustInternalRes(unsigned scale) {
 }
 
 static void ApplyPendingInternalRes(void) {
-    if (set_internal_res == internal_res) {
+    unsigned n = AdjustInternalRes(set_internal_res);
+    bool want_scaled = n > 1 || set_geometry_correction;
+    bool have_scaled = scaled_vram_render != NULL;
+    if (n == internal_res && set_geometry_correction == geometry_correction &&
+        want_scaled == have_scaled) {
         return;
     }
     if (!sdl3_window || !is_platform_init_successful) {
         return;
     }
-    unsigned n = AdjustInternalRes(set_internal_res);
-    if (n == internal_res) {
-        return;
-    }
     Draw_FlushBuffer(); // render pending prims with the old multiplier
-    if (n > 1 && !CreateScaledVramTarget(n)) {
-        n = 1;
-        set_internal_res = 1;
-    }
-    if (n > 1) {
-        // upscale the whole native VRAM into the freshly created scaled target
-        SDL_GPUCommandBuffer* cmd = AcquireCmd();
-        if (cmd) {
-            const SDL_GPUBlitInfo blit = {
-                .source = {.texture = vram_render, .w = VRAM_W, .h = VRAM_H},
-                .destination = {.texture = scaled_vram_render,
-                                .w = VRAM_W * n,
-                                .h = VRAM_H * n},
-                .load_op = SDL_GPU_LOADOP_DONT_CARE,
-                .filter = SDL_GPU_FILTER_NEAREST,
-            };
-            SDL_BlitGPUTexture(cmd, &blit);
+    if (want_scaled && (n != internal_res || !have_scaled)) {
+        if (!CreateScaledVramTarget(n)) {
+            n = 1;
+            set_internal_res = 1;
+            want_scaled = false;
+            set_geometry_correction = false;
+        } else {
+            // upscale the whole native VRAM into the freshly created scaled target
+            SDL_GPUCommandBuffer* cmd = AcquireCmd();
+            if (cmd) {
+                const SDL_GPUBlitInfo blit = {
+                    .source = {.texture = vram_render, .w = VRAM_W, .h = VRAM_H},
+                    .destination = {.texture = scaled_vram_render,
+                                    .w = VRAM_W * n,
+                                    .h = VRAM_H * n},
+                    .load_op = SDL_GPU_LOADOP_DONT_CARE,
+                    .filter = SDL_GPU_FILTER_NEAREST,
+                };
+                SDL_BlitGPUTexture(cmd, &blit);
+            }
         }
-    } else if (scaled_vram_render) {
+    } else if (!want_scaled && scaled_vram_render) {
         SDL_ReleaseGPUTexture(device, scaled_vram_render);
         scaled_vram_render = NULL;
         if (scaled_blend_sample) {
@@ -706,8 +717,11 @@ static void ApplyPendingInternalRes(void) {
         }
     }
     internal_res = n;
+    geometry_correction = set_geometry_correction;
+    Psyz_PgxpSetActive(!UseSoftwareBackend() && geometry_correction);
     UpdateScissor();
-    INFOF("internal resolution set to %dx (%dx%d)", n, VRAM_W * n, VRAM_H * n);
+    INFOF("internal resolution set to %dx (%dx%d), geometry_correction=%d",
+          n, VRAM_W * n, VRAM_H * n, (int)geometry_correction);
 }
 
 static SDL_GPUTexture* PrepareRgb24Display(void) {
@@ -835,6 +849,7 @@ static void PlatformBackend_Present(void) {
     }
     finish_time = SDL_GetPerformanceCounter();
     SubmitFrame();
+    Psyz_PgxpNextFrame();
 }
 
 static void QuitPlatform(void) {
@@ -924,6 +939,9 @@ static void QuitPlatform(void) {
 void ResetPlatform(void) {
     cur_tpage = 0;
     internal_res = 1;
+    geometry_correction = false;
+    set_geometry_correction = false;
+    Psyz_PgxpSetActive(0);
     QuitPlatform();
 }
 
@@ -1021,7 +1039,7 @@ unsigned char* Psyz_VideoAllocRenderedFrame(int* w, int* h) {
     if (!InitPlatform()) return NULL;
     Draw_FlushBuffer();
     if (!UseSoftwareBackend()) ApplyPendingInternalRes();
-    if (UseSoftwareBackend() || display_rgb24 || internal_res==1) {
+    if (UseSoftwareBackend() || display_rgb24 || !scaled_vram_render) {
         unsigned char* pixels=Psyz_VideoAllocCapturedFrame(w,h);
         if (!pixels) *w=*h=0;
         return pixels;
@@ -1099,6 +1117,20 @@ int Psyz_VideoSetInternalResolution(unsigned multiplier) {
     set_internal_res = multiplier;
     if (sdl3_window && is_platform_init_successful) {
         ApplyPendingInternalRes();
+    }
+    return 0;
+}
+
+int Psyz_VideoGetGeometryCorrection(void) {
+    return set_geometry_correction ? 1 : 0;
+}
+
+int Psyz_VideoSetGeometryCorrection(int enabled) {
+    set_geometry_correction = enabled != 0;
+    if (sdl3_window && is_platform_init_successful) {
+        ApplyPendingInternalRes();
+    } else {
+        Psyz_PgxpSetActive(!headless_renderer && set_geometry_correction);
     }
     return 0;
 }
@@ -1312,6 +1344,34 @@ int Draw_PushPrim(u_long* packets, int max_len) {
             if (!isGouraud || !isShadeTex) {
                 VRGBA(vertex_cur[1]) = VRGBA(vertex_cur[2]) =
                     VRGBA(vertex_cur[3]) = VRGBA(vertex_cur[0]);
+            }
+
+            {
+                bool pgxp_valid = true;
+                float min_w = 1e30f;
+                float max_w = 0.0f;
+                for (int i = 0; i < nVertices; ++i) {
+                    float w = vertex_cur[i].pgxp_pos[2];
+                    if (w <= 0.0f) {
+                        pgxp_valid = false;
+                        break;
+                    }
+                    if (w < min_w) {
+                        min_w = w;
+                    }
+                    if (w > max_w) {
+                        max_w = w;
+                    }
+                }
+                if (!pgxp_valid) {
+                    for (int i = 0; i < nVertices; ++i) {
+                        vertex_cur[i].pgxp_pos[2] = -1.0f;
+                    }
+                } else if (max_w > min_w * 8.0f) {
+                    for (int i = 0; i < nVertices; ++i) {
+                        vertex_cur[i].pgxp_pos[2] = 1.0f;
+                    }
+                }
             }
 
             if (nVertices == 4) {
@@ -1803,7 +1863,7 @@ void Draw_FlushBuffer(void) {
 
     /* Native VRAM is independently rasterized: gameplay readback and texture
      * feedback must not depend on high-resolution sample positions. */
-    for (unsigned target_index=0; target_index<(internal_res>1 ? 2u : 1u);
+    for (unsigned target_index=0; target_index<(scaled_vram_render ? 2u : 1u);
          ++target_index) {
         unsigned target_scale=target_index ? internal_res : 1;
         SDL_GPUTexture* destination_sample=target_index ? scaled_blend_sample : blend_sample;
@@ -1819,9 +1879,13 @@ void Draw_FlushBuffer(void) {
                 int y1=scissor_rect.y*(int)target_scale;
                 for (int i=start;i<end;++i) {
                     const Vertex* v=&vertex_buf[index_buf[i]];
-                    float bias=(v->t&TPAGE_POLYGON)?0.5f:0.0f;
-                    float x=(draw_offset.x+(v->x+bias)*GetDrawGridXScale())*target_scale;
-                    float y=(draw_offset.y+v->y+bias)*target_scale;
+                    float bias=((v->t&TPAGE_POLYGON) && target_scale==1)?0.5f:0.0f;
+                    bool use_pgxp=target_index && geometry_correction &&
+                        (v->t&TPAGE_POLYGON) && v->pgxp_pos[2]>0.0f;
+                    float vx=use_pgxp ? v->pgxp_pos[0] : (float)v->x;
+                    float vy=use_pgxp ? v->pgxp_pos[1] : (float)v->y;
+                    float x=(draw_offset.x+(vx+bias)*GetDrawGridXScale())*target_scale;
+                    float y=(draw_offset.y+vy+bias)*target_scale;
                     x0=SDL_min(x0,(int)SDL_floorf(x)-1);x1=SDL_max(x1,(int)SDL_ceilf(x)+1);
                     y0=SDL_min(y0,(int)SDL_floorf(y)-1);y1=SDL_max(y1,(int)SDL_ceilf(y)+1);
                 }
@@ -1870,7 +1934,9 @@ void Draw_FlushBuffer(void) {
                 {.texture=destination_sample,.sampler=vram_sampler}};
             SDL_BindGPUFragmentSamplers(pass,0,sampler_binding,2);
             const float offset_ubo[4] = {
-                (float)draw_offset.x, (float)draw_offset.y, 0, 0};
+                (float)draw_offset.x, (float)draw_offset.y,
+                (target_index != 0 && geometry_correction) ? 1.0f : 0.0f,
+                target_scale > 1 ? 1.0f : 0.0f};
             SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
             const u32 color_pass[4]={semi ? 2u : 0u,target_scale,
                 draw_grid_source_width==draw_grid_target_width,0};

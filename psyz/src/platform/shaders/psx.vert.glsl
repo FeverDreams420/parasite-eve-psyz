@@ -6,8 +6,9 @@ layout(location = 2) in vec4 color; // SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM
 layout(location = 3) in uvec4 twin; // SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4
 layout(location = 4) in vec2 polygonUV;
 layout(location = 5) in vec3 polygonRGB;
+layout(location = 6) in vec3 pgxpPos;
 
-layout(set = 1, binding = 0) uniform UBO { vec2 drawOffset; };
+layout(set = 1, binding = 0) uniform UBO { vec4 drawOffset; };
 
 layout(location = 0) out vec4 vertexColor;
 layout(location = 1) out vec2 rawUV;
@@ -26,21 +27,32 @@ layout(location = 12) flat out uint polygon;
 
 void main() {
     polygon = (tex.w & 0x2000u) != 0u ? 1u : 0u;
-    float bias = polygon != 0u ? 0.5 : 0.0;
-    float x = ((float(pos.x) + drawOffset.x + bias) / (1024.0 / 2.0)) - 1.0;
-    float y = ((float(pos.y) + drawOffset.y + bias) / (512.0 / 2.0)) - 1.0;
+    bool usePgxp = polygon != 0u && drawOffset.z != 0.0 && pgxpPos.z > 0.0;
+    bool hiRes = drawOffset.w != 0.0;
+    float bias = (polygon != 0u && !hiRes) ? 0.5 : 0.0;
+    float vx = usePgxp ? pgxpPos.x : (float(pos.x) + bias);
+    float vy = usePgxp ? pgxpPos.y : (float(pos.y) + bias);
+    float w = usePgxp ? pgxpPos.z : 1.0;
+    float x = ((vx + drawOffset.x) / (1024.0 / 2.0)) - 1.0;
+    float y = ((vy + drawOffset.y) / (512.0 / 2.0)) - 1.0;
     // SDL_GPU NDC y=-1 is the bottom while texture row 0 is the top; negate Y
     // so VRAM row 0 lands on texture row 0, like the GL FBO convention.
-    gl_Position = vec4(x, -y, 0.0, 1.0);
+    gl_Position = vec4(x * w, -y * w, 0.0, w);
     // gouraud colors
     vertexColor = color;
-    if (polygon != 0u) vertexColor.rgb = polygonRGB / 255.0;
+    if (polygon != 0u) {
+        vertexColor.rgb =
+            usePgxp ? (color.rgb + (0.5 / 255.0)) : (polygonRGB / 255.0);
+    }
     // select the right texture coords based on the tpage
     clut = tex.z;
     uint texWord = tex.w;
     tpage = texWord & 0x1FFu;
     dither = (texWord & 0x4000u) != 0u ? 1u : 0u;
-    rawUV = polygon != 0u ? polygonUV : vec2(tex.xy);
+    vec2 polyUV = hiRes ? (polygonUV - vec2(0.5)) : polygonUV;
+    rawUV = polygon != 0u
+                ? (usePgxp ? vec2(tex.xy) : polyUV)
+                : vec2(tex.xy);
     // Determine texture mode and pre-compute parameters
     subPixelMask = 0u;
     texelShift = 0u;

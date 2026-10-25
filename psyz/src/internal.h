@@ -52,4 +52,11 @@ void Psyz_KernelVBlank(void);
 // Services due timers when the host has no thread to run them.
 void Psyz_KernelPoll(void);
 
+// Subpixel GTE->GPU coordinate cache for optional geometry correction.
+void Psyz_PgxpSetActive(int active);
+void Psyz_PgxpNextFrame(void);
+int Psyz_PgxpLookupVertex(
+    const void* packet_sxy_addr, unsigned int sxy, float* x, float* y,
+    float* w);
+
 #endif

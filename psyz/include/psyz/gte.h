@@ -139,6 +139,18 @@ void Psyz_GteStsz4(unsigned int* out0, unsigned int* out1, unsigned int* out2,
                    unsigned int* out3);
 void Psyz_GteStsz3c(unsigned int* out);
 void Psyz_GteStsz4c(unsigned int* out);
+void Psyz_GteSetPgxpMatrix(const double rot[3][3], const double trans[3]);
+void Psyz_GteClearPgxpMatrix(void);
+void Psyz_GteStoreSxyTo(unsigned reg, void* dst);
+void Psyz_GteCopyPgxpSxy(
+    const void* src, const void* dst, unsigned int sxy);
+int Psyz_GtePgxpNclip3(
+    const void* s0, unsigned int xy0, const void* s1, unsigned int xy1,
+    const void* s2, unsigned int xy2, int int_area);
+int Psyz_GtePgxpNclip4(
+    const void* s0, unsigned int xy0, const void* s1, unsigned int xy1,
+    const void* s2, unsigned int xy2, const void* s3, unsigned int xy3,
+    int int_area);
 
 #ifdef __cplusplus
 }

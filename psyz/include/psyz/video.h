@@ -199,6 +199,25 @@ int Psyz_VideoSetInternalResolution(unsigned multiplier);
 unsigned Psyz_VideoGetInternalResolution(void);
 
 /**
+ * @brief Enable or disable subpixel 3D geometry & perspective UV correction
+ *
+ * Preserves native 1x VRAM and GTE integer state for game logic while using
+ * subpixel vertex coordinates and perspective-correct attribute interpolation
+ * on the GPU display target.
+ *
+ * @param enabled Non-zero to enable, 0 to disable
+ * @return 0 on success
+ */
+int Psyz_VideoSetGeometryCorrection(int enabled);
+
+/**
+ * @brief Query whether subpixel 3D geometry correction is enabled
+ *
+ * @return Non-zero when enabled, 0 when disabled
+ */
+int Psyz_VideoGetGeometryCorrection(void);
+
+/**
  * @brief Synchronize with vertical blank
  *
  * Synchronize with the refresh rate mode set in Psyz_VideoSetVsyncMode.
