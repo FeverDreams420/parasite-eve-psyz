@@ -140,6 +140,10 @@ void Psyz_GteStsz4(unsigned int* out0, unsigned int* out1, unsigned int* out2,
 void Psyz_GteStsz3c(unsigned int* out);
 void Psyz_GteStsz4c(unsigned int* out);
 void Psyz_GteSetPgxpMatrix(const double rot[3][3], const double trans[3]);
+/* Start a new geometry-build generation, after the previous packets were
+ * consumed. Presentation/VSync must not discard metadata for an OT that the
+ * game has already built but has not yet submitted. */
+void Psyz_PgxpNextFrame(void);
 void Psyz_GteClearPgxpMatrix(void);
 void Psyz_GteStoreSxyTo(unsigned reg, void* dst);
 void Psyz_GteCopyPgxpSxy(

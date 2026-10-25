@@ -888,7 +888,6 @@ static void PlatformBackend_Present(void) {
     }
     finish_time = SDL_GetPerformanceCounter();
     SubmitFrame();
-    Psyz_PgxpNextFrame();
 }
 
 static void QuitPlatform(void) {

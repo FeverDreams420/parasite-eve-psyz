@@ -131,6 +131,35 @@ static void SetPolyF4Img(POLY_FT4* poly, int x, int y, int w, int h, int u,
 ZTEST_SETUP(gpu) { gpu_setup(); }
 ZTEST_TEARDOWN(gpu) { gpu_teardown(); }
 
+/* A game may build its OT, wait for two vblanks, then submit that OT. */
+ZTEST(gpu, geometry_metadata_survives_present_before_submission) {
+#if defined(__psyz) && !defined(__PSP__)
+    extern void Psyz_PgxpNextFrame(void);
+    extern int Psyz_PgxpLookupVertex(const void *,unsigned int,float *,float *,float *);
+    extern void Psyz_GteDataWrite(unsigned int,unsigned int);
+    extern void Psyz_GteCtrlWrite(unsigned int,unsigned int);
+    extern void Psyz_GteCommand(unsigned int);
+    extern void Psyz_GteStoreSxyTo(unsigned int,void *);
+    const char *headless=getenv("PSYZ_HEADLESS");
+    if(headless&&!strcmp(headless,"1"))return;
+    Psyz_VideoSetInternalResolution(2);Psyz_VideoSetGeometryCorrection(1);
+    Psyz_PgxpNextFrame();
+    Psyz_GteCtrlWrite(0,4096);Psyz_GteCtrlWrite(1,0);Psyz_GteCtrlWrite(2,4096);
+    Psyz_GteCtrlWrite(3,0);Psyz_GteCtrlWrite(4,4096);
+    Psyz_GteCtrlWrite(5,0);Psyz_GteCtrlWrite(6,0);Psyz_GteCtrlWrite(7,512);
+    Psyz_GteCtrlWrite(24,160u<<16);Psyz_GteCtrlWrite(25,112u<<16);Psyz_GteCtrlWrite(26,256);
+    Psyz_GteDataWrite(0,3u|(5u<<16));Psyz_GteDataWrite(1,0);
+    Psyz_GteCommand(0x180001);
+    unsigned int xy;float x,y,w;Psyz_GteStoreSxyTo(14,&xy);
+    zassert_s32_eq(1,Psyz_PgxpLookupVertex(&xy,xy,&x,&y,&w));
+    VSync(0);VSync(0);
+    zassert_s32_eq(1,Psyz_PgxpLookupVertex(&xy,xy,&x,&y,&w));
+    Psyz_PgxpNextFrame();
+    zassert_s32_eq(0,Psyz_PgxpLookupVertex(&xy,xy,&x,&y,&w));
+    Psyz_VideoSetGeometryCorrection(0);Psyz_VideoSetInternalResolution(1);
+#endif
+}
+
 /* Keep the raw subrectangle blit as a diagnostic: its rounding varies by
  * backend. The origin-zero presentation used by the renderer must be stable. */
 ZTEST(gpu, presentation_crop_is_stable_across_field_buffers) {
