@@ -131,6 +131,105 @@ static void SetPolyF4Img(POLY_FT4* poly, int x, int y, int w, int h, int u,
 ZTEST_SETUP(gpu) { gpu_setup(); }
 ZTEST_TEARDOWN(gpu) { gpu_teardown(); }
 
+/* Keep the raw subrectangle blit as a diagnostic: its rounding varies by
+ * backend. The origin-zero presentation used by the renderer must be stable. */
+ZTEST(gpu, presentation_crop_is_stable_across_field_buffers) {
+#if defined(__psyz) && !defined(__PSP__)
+    SDL_GPUDevice *dev=SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL|SDL_GPU_SHADERFORMAT_SPIRV|SDL_GPU_SHADERFORMAT_DXIL,false,NULL);
+    zassert_ptr_ne(NULL,dev);
+    SDL_GPUTextureCreateInfo info={.type=SDL_GPU_TEXTURETYPE_2D,.format=SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        .usage=SDL_GPU_TEXTUREUSAGE_SAMPLER|SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,.width=1024,.height=512,.layer_count_or_depth=1,.num_levels=1};
+    SDL_GPUTexture *src=SDL_CreateGPUTexture(dev,&info);zassert_ptr_ne(NULL,src);
+    SDL_GPUTransferBufferCreateInfo ti={.usage=SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,.size=1024*512*4};
+    SDL_GPUTransferBuffer *upload=SDL_CreateGPUTransferBuffer(dev,&ti);
+    zassert_ptr_ne(NULL,upload);
+    u8 *pixels=SDL_MapGPUTransferBuffer(dev,upload,false);zassert_ptr_ne(NULL,pixels);
+    for(int y=0;y<512;++y)for(int x=0;x<1024;++x){int i=(y*1024+x)*4;
+        pixels[i]=x%256;pixels[i+1]=((y%224)*71)%256;pixels[i+2]=(y%224)&1?255:0;pixels[i+3]=255;}
+    SDL_UnmapGPUTransferBuffer(dev,upload);
+    SDL_GPUCommandBuffer *cmd=SDL_AcquireGPUCommandBuffer(dev);SDL_GPUCopyPass *copy=SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureTransferInfo source={.transfer_buffer=upload};
+    SDL_GPUTextureRegion region={.texture=src,.w=1024,.h=512,.d=1};SDL_UploadToGPUTexture(copy,&source,&region,false);SDL_EndGPUCopyPass(copy);SDL_SubmitGPUCommandBuffer(cmd);
+    const int sizes[][2]={{960,672},{960,720},{1000,700},{1296,907}};
+    for(unsigned size=0;size<4;++size){
+        int w=sizes[size][0],h=sizes[size][1];info.width=w;info.height=h;
+        SDL_GPUTexture *dst=SDL_CreateGPUTexture(dev,&info);zassert_ptr_ne(NULL,dst);
+        ti.usage=SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;ti.size=w*h*4;
+        SDL_GPUTransferBuffer *download=SDL_CreateGPUTransferBuffer(dev,&ti);
+        u8 *reference=malloc(w*h*4);unsigned differences=0;
+        SDL_GPUTextureCreateInfo crop_info=info;crop_info.width=320;crop_info.height=224;
+        SDL_GPUTexture *crop=SDL_CreateGPUTexture(dev,&crop_info);zassert_ptr_ne(NULL,crop);
+        for(int staged=0;staged<2;++staged){
+        differences=0;
+        for(int slot=0;slot<2;++slot){
+            cmd=SDL_AcquireGPUCommandBuffer(dev);
+            SDL_GPUBlitInfo blit={.source={.texture=src,.y=slot*224,.w=320,.h=224},
+                .destination={.texture=dst,.w=w,.h=h},.load_op=SDL_GPU_LOADOP_DONT_CARE,.filter=SDL_GPU_FILTER_NEAREST};
+            if(staged){
+                copy=SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureLocation from={.texture=src,.y=slot*224},to={.texture=crop};
+                SDL_CopyGPUTextureToTexture(copy,&from,&to,320,224,1,false);SDL_EndGPUCopyPass(copy);
+                blit.source=(SDL_GPUBlitRegion){.texture=crop,.w=320,.h=224};
+            }
+            SDL_BlitGPUTexture(cmd,&blit);
+            copy=SDL_BeginGPUCopyPass(cmd);source.transfer_buffer=download;region=(SDL_GPUTextureRegion){.texture=dst,.w=w,.h=h,.d=1};
+            SDL_DownloadFromGPUTexture(copy,&region,&source);SDL_EndGPUCopyPass(copy);
+            SDL_GPUFence *fence=SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);SDL_WaitForGPUFences(dev,true,&fence,1);SDL_ReleaseGPUFence(dev,fence);
+            pixels=SDL_MapGPUTransferBuffer(dev,download,false);
+            if(!slot)memcpy(reference,pixels,w*h*4);
+            else for(int i=0;i<w*h*4;++i)differences+=reference[i]!=pixels[i];
+            SDL_UnmapGPUTransferBuffer(dev,download);
+        }
+        printf("Presentation crop %dx%d, staged=%d: %u differing channels\n",w,h,staged,differences);
+        if(staged)zassert_s32_eq(0,differences);
+        }
+        free(reference);SDL_ReleaseGPUTransferBuffer(dev,download);SDL_ReleaseGPUTexture(dev,dst);SDL_ReleaseGPUTexture(dev,crop);
+    }
+    SDL_ReleaseGPUTransferBuffer(dev,upload);SDL_ReleaseGPUTexture(dev,src);SDL_DestroyGPUDevice(dev);
+#endif
+}
+
+/* Text uses affine FT4s in vertically stacked field buffers. Their texture
+ * samples must be independent of the absolute VRAM row of the draw target. */
+ZTEST(gpu, text_quad_is_stable_across_field_buffers) {
+    zskip_targets("psp;ps1");
+#if defined(__psyz) && !defined(__PSP__)
+    const unsigned scales[]={1,2,7,8};
+    u16 texels[32*16];
+    for(int y=0;y<16;++y)for(int x=0;x<32;++x)
+        texels[y*32+x]=(1+((x*13+y*7)%31))|(((x+y)%31)<<5)|((y%31)<<10);
+    RECT texture={512,0,32,16};LoadImage(&texture,(u_long*)texels);DrawSync(0);
+    const char *headless=getenv("PSYZ_HEADLESS");
+    unsigned count=headless&&!strcmp(headless,"1")?1:4;
+    for(unsigned si=0;si<count;++si){
+        unsigned scale=scales[si];Psyz_VideoSetInternalResolution(scale);
+        unsigned char *reference=NULL;int rw=0,rh=0;
+        for(int slot=0;slot<2;++slot){
+            DRAWENV draw;DISPENV disp;
+            SetDefDrawEnv(&draw,0,slot*224,320,224);draw.dtd=0;PutDrawEnv(&draw);
+            SetDefDispEnv(&disp,0,slot*224,320,224);PutDispEnv(&disp);
+            RECT clear={0,slot*224,320,224};ClearImage(&clear,0,0,0);
+            POLY_FT4 text={0};setPolyFT4(&text);setRGB0(&text,128,128,128);
+            setXYWH(&text,23,173,13,12);setUVWH(&text,3,2,13,12);
+            text.tpage=GetTPage(2,0,512,0);DrawPrim(&text);
+            DR_TPAGE page;SetDrawTPage(&page,0,0,text.tpage);DrawPrim(&page);
+            SPRT glyph={0};setSprt(&glyph);setRGB0(&glyph,128,128,128);
+            setXY0(&glyph,43,173);setUV0(&glyph,3,2);setWH(&glyph,13,12);DrawPrim(&glyph);DrawSync(0);
+            int w,h;unsigned char *image=Psyz_VideoAllocRenderedFrame(&w,&h);
+            zassert_ptr_ne(NULL,image);
+            if(!slot){reference=image;rw=w;rh=h;}
+            else {zassert_s32_eq(rw,w);zassert_s32_eq(rh,h);
+                unsigned differences=0;
+                for(int i=0;i<w*h*3;++i)differences+=image[i]!=reference[i];
+                printf("Field-buffer text stability %ux: %u differing channels\n",scale,differences);
+                zassert_s32_eq(0,differences);free(image);}
+        }
+        free(reference);
+    }
+    Psyz_VideoSetInternalResolution(1);
+#endif
+}
+
 ZTEST(gpu, rgb24_display_reads_packed_vram_bytes) {
     const int widths[] = {256,320,368,512,640};
     for (unsigned mode=0;mode<sizeof(widths)/sizeof(widths[0]);++mode) {

@@ -67,6 +67,8 @@ static SDL_GPUDevice* device = NULL;
 static bool swapchain_ok = false;
 static SDL_GPUTexture* vram_render = NULL;
 static SDL_GPUTexture* rgb24_display = NULL;
+static SDL_GPUTexture* presentation_display = NULL;
+static Uint32 presentation_width, presentation_height;
 static bool display_rgb24;
 static bool display_double_height;
 static SDL_GPUTexture* vram_sample = NULL;
@@ -808,6 +810,43 @@ static void PlatformBackend_Present(void) {
                     game_aspect = (float)VRAM_W / (float)VRAM_H;
                 }
 
+                /* Nearest blits from alternating VRAM subrectangles can
+                 * round normalized UVs to opposite sides of a texel boundary.
+                 * Stage the visible region at the same origin every frame:
+                 * even an unchanged textbox must not shimmer on buffer flips.
+                 * RGB24 already has a separate, origin-zero display texture. */
+                if (!rgb24 && !debug_show_vram) {
+                    if (!presentation_display || presentation_width != src.w ||
+                        presentation_height != src.h) {
+                        if (presentation_display)
+                            SDL_ReleaseGPUTexture(device, presentation_display);
+                        const SDL_GPUTextureCreateInfo info = {
+                            .type = SDL_GPU_TEXTURETYPE_2D,
+                            .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                            .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                            .width = src.w, .height = src.h,
+                            .layer_count_or_depth = 1, .num_levels = 1,
+                        };
+                        presentation_display = SDL_CreateGPUTexture(device, &info);
+                        presentation_width = src.w;
+                        presentation_height = src.h;
+                    }
+                    if (presentation_display) {
+                        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+                        const SDL_GPUTextureLocation from = {
+                            .texture = src.texture, .x = src.x, .y = src.y,
+                        };
+                        const SDL_GPUTextureLocation to = {
+                            .texture = presentation_display,
+                        };
+                        SDL_CopyGPUTextureToTexture(copy, &from, &to,
+                            src.w, src.h, 1, false);
+                        SDL_EndGPUCopyPass(copy);
+                        src.texture = presentation_display;
+                        src.x = src.y = 0;
+                    }
+                }
+
                 WndSize win = {(int)sc_w, (int)sc_h};
                 SDL_Rect dst = FitGameToWindow(game_aspect, win);
 
@@ -871,6 +910,11 @@ static void QuitPlatform(void) {
             pipe_clear = NULL;
         }
         if (rgb24_display) { SDL_ReleaseGPUTexture(device, rgb24_display); rgb24_display=NULL; }
+        if (presentation_display) {
+            SDL_ReleaseGPUTexture(device, presentation_display);
+            presentation_display = NULL;
+        }
+        presentation_width = presentation_height = 0;
         if (vram_render) {
             SDL_ReleaseGPUTexture(device, vram_render);
             vram_render = NULL;
