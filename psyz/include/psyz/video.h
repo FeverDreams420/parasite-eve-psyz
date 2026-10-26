@@ -239,6 +239,22 @@ int Psyz_VideoGetModelFiltering(void);
 int Psyz_VideoVSync(int mode);
 
 /**
+ * @brief Run the game faster than real time (default: 1)
+ *
+ * Frame pacing, the vertical blank count, root counters and audio all run
+ * `speed` times faster, so the game behaves as at normal speed. The VSync
+ * mode and the swapchain are left as they are: with driver VSync only the
+ * newest frame of each refresh is shown, so presents never queue up.
+ * Audio plays at a higher pitch.
+ *
+ * @param speed 1 (normal) to PSYZ_SPEED_MAX
+ * @return 0 on success, -1 if invalid speed
+ */
+#define PSYZ_SPEED_MAX 4
+int Psyz_VideoSetSpeed(unsigned speed);
+unsigned Psyz_VideoGetSpeed(void);
+
+/**
  * @brief Get frame timing statistics
  *
  * @param stats Output structure to fill
