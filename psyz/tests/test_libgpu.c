@@ -232,6 +232,62 @@ ZTEST(gpu, widescreen_squeezes_display_buffer_drawing) {
 #endif
 }
 
+ZTEST(gpu, vram_copy_follows_uploads_fills_and_copies) {
+#if defined(__psyz) && !defined(__PSP__)
+    const unsigned char *known = NULL;
+    const unsigned short *vram;
+    u16 pixels[4 * 2] = {0x1234, 0x0000, 0x8000, 0x7FFF, 1, 2, 3, 4};
+    RECT load = {600, 300, 4, 2}, fill = {700, 300, 8, 4};
+    zassert_ptr_eq(NULL, Psyz_GpuGetVramCopy(NULL));
+    zassert_s32_eq(0, Psyz_GpuSetVramCopy(1));
+    vram = Psyz_GpuGetVramCopy(&known);
+    zassert_ptr_ne(NULL, vram);
+    zassert_ptr_ne(NULL, known);
+
+    /* uploads land as they are, transparent texels included */
+    LoadImage(&load, (u_long *)pixels);
+    DrawSync(0);
+    zexpect_s32_eq(0x1234, vram[300 * 1024 + 600]);
+    zexpect_s32_eq(0x0000, vram[300 * 1024 + 601]);
+    zexpect_s32_eq(0x8000, vram[300 * 1024 + 602]);
+    zexpect_s32_eq(4, vram[301 * 1024 + 603]);
+    zexpect_u8_eq(1, known[300 * 1024 + 601]);
+    zexpect_u8_eq(1, known[301 * 1024 + 603]);
+    zexpect_u8_eq(0, known[300 * 1024 + 604]);
+
+    /* fills are kept as RGB5551 */
+    ClearImage(&fill, 255, 0, 8);
+    DrawSync(0);
+    zexpect_s32_eq(0x041F, vram[302 * 1024 + 703]);
+    zexpect_u8_eq(1, known[303 * 1024 + 707]);
+
+    /* copies move texels and what is known */
+    MoveImage(&load, 640, 310);
+    DrawSync(0);
+    zexpect_s32_eq(0x1234, vram[310 * 1024 + 640]);
+    zexpect_s32_eq(4, vram[311 * 1024 + 643]);
+    zexpect_u8_eq(1, known[311 * 1024 + 643]);
+
+    /* drawing into an area makes it unknown, other areas stay known */
+    DRAWENV draw;
+    SetDefDrawEnv(&draw, 696, 296, 16, 16);
+    draw.dtd = 0;
+    PutDrawEnv(&draw);
+    TILE tile = {0};
+    setTile(&tile);
+    setRGB0(&tile, 0, 255, 0);
+    setXY0(&tile, 0, 0);
+    setWH(&tile, 2, 2);
+    DrawPrim(&tile);
+    DrawSync(0);
+    zexpect_u8_eq(0, known[302 * 1024 + 703]);
+    zexpect_u8_eq(1, known[300 * 1024 + 600]);
+
+    zassert_s32_eq(0, Psyz_GpuSetVramCopy(0));
+    zexpect_ptr_eq(NULL, Psyz_GpuGetVramCopy(NULL));
+#endif
+}
+
 ZTEST(gpu, optional_model_filter_and_ssaa_preserve_native_vram_and_text) {
 #if defined(__psyz) && !defined(__PSP__)
     const char *headless=getenv("PSYZ_HEADLESS");
