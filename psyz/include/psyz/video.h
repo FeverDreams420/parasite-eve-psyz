@@ -253,7 +253,8 @@ int Psyz_VideoGetWidescreen(void);
  * left and right are game pixels relative to the screen's left edge. The
  * 16:9 view is slid towards the side that has picture until its edge meets
  * the picture's end, at most as far as keeps the game's own screen inside it
- * (39 pixels at 320x224); a span narrower than the view is centred. The
+ * (39 pixels at 320x224); a span narrower than the view shows only the 4:3
+ * screen, unshifted, with even bars. The
  * buffer's squeeze follows the shift, so the view always fits in the buffer:
  * the game should draw its picture up to 0.3 of the screen width past each
  * side. Everything outside the span stays black. Call it before drawing the
@@ -262,6 +263,20 @@ int Psyz_VideoGetWidescreen(void);
  * @param buffer_y VRAM row of the buffer's drawing area
  */
 void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right);
+
+/**
+ * @brief Draw centred in the 16:9 view, ignoring the view's shift
+ *
+ * While on, drawing into a display buffer lands where it would with the view
+ * unshifted: the game screen's centre is the view's centre. For layers that
+ * belong to the screen rather than the room (menus over a room whose view is
+ * shifted at its end). Psyz_VideoSetWidescreenPicture turns it off. To switch
+ * it in ordering-table order, call it from a GP0 command handler (see
+ * Psyz_GpuRegisterCommandHandler).
+ *
+ * @param enabled Non-zero to draw centred, 0 to follow the view's shift
+ */
+void Psyz_VideoSetWidescreenCentred(int enabled);
 
 /**
  * @brief Synchronize with vertical blank

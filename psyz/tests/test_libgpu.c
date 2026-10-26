@@ -202,6 +202,25 @@ ZTEST(gpu, widescreen_squeezes_display_buffer_drawing) {
     zexpect_s32_eq(0,row[16]&0x7FFF);zexpect_s32_eq(0,row[60]&0x7FFF);
     zexpect_s32_eq(0x03E0,row[70]&0x7FFF);zexpect_s32_eq(0x03E0,row[74]&0x7FFF);
     zexpect_s32_eq(0,row[76]&0x7FFF);
+
+    /* centred (a menu): the screen's x 156..164 lands on 157..163 as with
+     * no shift, not on 186..192 */
+    ClearImage(&clear,0,0,0);
+    Psyz_VideoSetWidescreenCentred(1);
+    TILE menu={0};setTile(&menu);setRGB0(&menu,0,255,0);
+    setXY0(&menu,156,90);setWH(&menu,8,20);DrawPrim(&menu);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0x03E0,row[158]&0x7FFF);zexpect_s32_eq(0x03E0,row[162]&0x7FFF);
+    zexpect_s32_eq(0,row[188]&0x7FFF);
+
+    /* a picture narrower than the view (-20..320) shows 4:3, unshifted:
+     * the screen's x 0..8 lands on 40..46, not 47.5..53.5 */
+    Psyz_VideoSetWidescreenPicture(0,-20,320);
+    ClearImage(&clear,0,0,0);
+    DrawPrim(&edge);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0x03E0,row[41]&0x7FFF);zexpect_s32_eq(0x03E0,row[45]&0x7FFF);
+    zexpect_s32_eq(0,row[50]&0x7FFF);
     Psyz_VideoSetWidescreenPicture(0,0,0);
 
     /* off again: the margin is clipped as on the PlayStation */

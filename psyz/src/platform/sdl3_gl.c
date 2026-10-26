@@ -811,6 +811,7 @@ void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
     (void)left;
     (void)right;
 }
+void Psyz_VideoSetWidescreenCentred(int enabled) { (void)enabled; }
 
 int Psyz_VideoGetGeometryCorrection(void) { return 0; }
 

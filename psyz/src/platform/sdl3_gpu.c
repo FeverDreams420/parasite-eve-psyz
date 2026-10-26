@@ -115,6 +115,8 @@ static struct {
     int left, right;
     int shift;
 } ws_picture[2] = {{-1, 0, 0, 0}, {-1, 0, 0, 0}};
+/* Psyz_VideoSetWidescreenCentred: drawing ignores the view's shift. */
+static bool ws_centred;
 
 static bool WidescreenDraw(void) {
     return widescreen && !display_rgb24 && display_size.x > 0 &&
@@ -149,7 +151,7 @@ static float WidescreenPivot(int shift) {
 }
 
 static float WidescreenCentre(void) {
-    return (float)display_area.x + WidescreenPivot(WidescreenDrawShift());
+    return (float)display_area.x + WidescreenPivot(ws_centred ? 0 : WidescreenDrawShift());
 }
 
 static int WidescreenMargin(void) { return (display_size.x + 5) / 6; }
@@ -953,7 +955,7 @@ static void PlatformBackend_Present(void) {
                  * Psyz_VideoSetWidescreenPicture). A 16:9 window of it (for
                  * the screen's pixel aspect) is shown around that point. Past
                  * the picture the swapchain clear leaves black; a room
-                 * narrower than the window is centred, with even bars. */
+                 * narrower than the window shows 4:3, with even bars. */
                 if (widescreen && !rgb24 && !debug_show_vram && game_aspect > 0.0f) {
                     const float w = (float)display_size.x, centre = w * 0.5f;
                     const float buffer_half = centre / WS_SQUEEZE;
@@ -1348,10 +1350,17 @@ int Psyz_VideoSetWidescreen(int enabled) {
         Draw_FlushBuffer();
         widescreen = enabled != 0;
         ws_picture[0].y = ws_picture[1].y = -1;
+        ws_centred = false;
     }
     return 0;
 }
 int Psyz_VideoGetWidescreen(void) { return widescreen; }
+void Psyz_VideoSetWidescreenCentred(int enabled) {
+    if ((enabled != 0) != ws_centred) {
+        Draw_FlushBuffer();
+        ws_centred = enabled != 0;
+    }
+}
 void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
     int slot = ws_picture[0].y == buffer_y ? 0 : (ws_picture[1].y == buffer_y ? 1 : -1);
     if (slot < 0) {
@@ -1364,20 +1373,23 @@ void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
     }
     /* The view slides towards the side that has picture at a room's end, so
      * the end of the picture lines up with the view's edge, but never so far
-     * that the game's own screen leaves the view; a picture narrower than
-     * the view is centred. Drawing into the buffer squeezes around the
-     * shifted point from here on, so the buffer holds the shifted view. */
+     * that the game's own screen leaves the view. A picture narrower than
+     * the view is shown as the plain 4:3 screen, unshifted, with even bars.
+     * Drawing into the buffer squeezes around the shifted point from here
+     * on, so the buffer holds the shifted view. */
     Draw_FlushBuffer();
+    ws_centred = false;
     const float centre = (float)display_size.x * 0.5f;
     const float half =
         WidescreenViewHalf(GetCurrentGameAspectRatio(display_size.x, display_size.y));
     const float max_shift = SDL_max(0.0f, half - centre);
     float shift = 0.0f;
-    /* whole pixels, rounded towards the picture so no sliver of black shows */
-    if (left < right) {
-        if ((float)(right - left) <= 2.0f * half) {
-            shift = SDL_roundf((float)(left + right) * 0.5f - centre);
-        } else if (centre - half < (float)left) {
+    if (left < right && (float)(right - left) < 2.0f * half) {
+        left = 0;
+        right = display_size.x;
+    } else if (left < right) {
+        /* whole pixels, rounded towards the picture so no sliver of black shows */
+        if (centre - half < (float)left) {
             shift = SDL_ceilf((float)left - (centre - half));
         } else if (centre + half > (float)right) {
             shift = SDL_floorf((float)right - (centre + half));
