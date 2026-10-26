@@ -599,6 +599,10 @@ static void PlatformBackend_Present(void) {
         return;
     }
     ApplyPendingInternalRes();
+    if (present_skip) {
+        finish_time = SDL_GetPerformanceCounter();
+        return;
+    }
 
     int n = (int)internal_res;
     GLuint source_fbo = GetDrawFbo();
