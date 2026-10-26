@@ -149,6 +149,70 @@ ZTEST(gpu, supersampling_at_max_resolution_preserves_requested_size) {
 #endif
 }
 
+/* Widescreen squeezes drawing into the display buffer to 3/4 around its
+ * centre, so the margins past the screen's edges are kept; full-width fills
+ * cover them too, and drawing elsewhere in VRAM is left alone. */
+ZTEST(gpu, widescreen_squeezes_display_buffer_drawing) {
+#if defined(__psyz) && !defined(__PSP__)
+    const char *headless=getenv("PSYZ_HEADLESS");
+    if(headless&&!strcmp(headless,"1"))return;
+    DISPENV disp;SetDefDispEnv(&disp,0,0,320,224);disp.screen.h=224;PutDispEnv(&disp);
+    DRAWENV draw;SetDefDrawEnv(&draw,0,0,320,224);draw.dtd=0;PutDrawEnv(&draw);
+    RECT clear={0,0,320,224},line={0,100,320,1};
+    u16 row[320];
+    zassert_s32_eq(0,Psyz_VideoGetWidescreen());
+    zassert_s32_eq(0,Psyz_VideoSetWidescreen(1));
+    zassert_s32_eq(1,Psyz_VideoGetWidescreen());
+
+    /* x -53..0 lands on 0.25..40 */
+    ClearImage(&clear,0,0,0);
+    TILE margin={0};setTile(&margin);setRGB0(&margin,255,0,0);
+    setXY0(&margin,-53,90);setWH(&margin,53,20);DrawPrim(&margin);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0x001F,row[1]&0x7FFF);zexpect_s32_eq(0x001F,row[38]&0x7FFF);
+    zexpect_s32_eq(0,row[42]&0x7FFF);zexpect_s32_eq(0,row[160]&0x7FFF);
+
+    /* a fill across the screen is widened to the margins */
+    ClearImage(&clear,0,0,0);
+    TILE fill={0};setTile(&fill);setRGB0(&fill,0,255,0);
+    setXY0(&fill,0,90);setWH(&fill,320,20);DrawPrim(&fill);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0x03E0,row[0]&0x7FFF);zexpect_s32_eq(0x03E0,row[319]&0x7FFF);
+
+    /* a drawing area outside the display buffer is not squeezed */
+    DRAWENV other;SetDefDrawEnv(&other,512,0,64,64);other.dtd=0;PutDrawEnv(&other);
+    RECT other_clear={512,0,64,64},other_line={512,4,64,1};
+    ClearImage(&other_clear,0,0,0);
+    TILE plain={0};setTile(&plain);setRGB0(&plain,0,0,255);
+    setXY0(&plain,0,0);setWH(&plain,8,8);DrawPrim(&plain);
+    DrawSync(0);StoreImage(&other_line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0x7C00,row[0]&0x7FFF);zexpect_s32_eq(0x7C00,row[7]&0x7FFF);
+    zexpect_s32_eq(0,row[8]&0x7FFF);
+
+    /* at a room's right end the view slides 39 left, and the buffer holds
+     * it: x -80..-72 lands on 9.25..15.25, the screen's x 0 on 69.25 */
+    PutDrawEnv(&draw);Psyz_VideoSetWidescreenPicture(0,-96,320);
+    ClearImage(&clear,0,0,0);
+    TILE far={0};setTile(&far);setRGB0(&far,255,0,0);
+    setXY0(&far,-80,90);setWH(&far,8,20);DrawPrim(&far);
+    TILE edge={0};setTile(&edge);setRGB0(&edge,0,255,0);
+    setXY0(&edge,0,90);setWH(&edge,8,20);DrawPrim(&edge);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0x001F,row[10]&0x7FFF);zexpect_s32_eq(0x001F,row[14]&0x7FFF);
+    zexpect_s32_eq(0,row[16]&0x7FFF);zexpect_s32_eq(0,row[60]&0x7FFF);
+    zexpect_s32_eq(0x03E0,row[70]&0x7FFF);zexpect_s32_eq(0x03E0,row[74]&0x7FFF);
+    zexpect_s32_eq(0,row[76]&0x7FFF);
+    Psyz_VideoSetWidescreenPicture(0,0,0);
+
+    /* off again: the margin is clipped as on the PlayStation */
+    zassert_s32_eq(0,Psyz_VideoSetWidescreen(0));
+    zassert_s32_eq(0,Psyz_VideoGetWidescreen());
+    PutDrawEnv(&draw);ClearImage(&clear,0,0,0);DrawPrim(&margin);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zassert_s32_eq(0,row[1]&0x7FFF);
+#endif
+}
+
 ZTEST(gpu, optional_model_filter_and_ssaa_preserve_native_vram_and_text) {
 #if defined(__psyz) && !defined(__PSP__)
     const char *headless=getenv("PSYZ_HEADLESS");

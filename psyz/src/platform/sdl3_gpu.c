@@ -103,6 +103,81 @@ static Posi draw_area_start = {0, 0};
 static Posi draw_area_end = {0x10000, 0x10000};
 static SDL_Rect scissor_rect = {0, 0, VRAM_W, VRAM_H};
 
+/* Widescreen (Psyz_VideoSetWidescreen). 3/4 keeps every game pixel a whole
+ * number of render pixels wide at 4x and 8x (3 and 6), so scrolling
+ * backgrounds do not shimmer. ws_picture holds the game's picture span per
+ * display buffer, keyed by the buffer's VRAM row, and the shift (game
+ * pixels) of the 16:9 view from the screen's centre chosen for it. */
+#define WS_SQUEEZE 0.75f
+static bool widescreen;
+static struct {
+    int y;
+    int left, right;
+    int shift;
+} ws_picture[2] = {{-1, 0, 0, 0}, {-1, 0, 0, 0}};
+
+static bool WidescreenDraw(void) {
+    return widescreen && !display_rgb24 && display_size.x > 0 &&
+           display_size.y > 0 && draw_area_start.x >= display_area.x &&
+           draw_area_end.x < display_area.x + display_size.x &&
+           draw_area_start.y >= 0 && draw_area_end.y < 2 * display_size.y;
+}
+
+/* Half the 16:9 view's width in whole game pixels, for the screen's pixel
+ * aspect (199 for 320x224), so its edges meet the picture's ends exactly;
+ * never wider than the squeezed buffer. */
+static float WidescreenViewHalf(float game_aspect) {
+    const float w = (float)display_size.x;
+    return SDL_floorf(SDL_min(w * (16.0f / 9.0f) / game_aspect, w / WS_SQUEEZE) * 0.5f);
+}
+
+/* The view's shift for the buffer the drawing area is in. */
+static int WidescreenDrawShift(void) {
+    for (int i = 0; i < 2; ++i) {
+        if (ws_picture[i].y >= 0 && draw_area_start.y >= ws_picture[i].y &&
+            draw_area_start.y < ws_picture[i].y + display_size.y)
+            return ws_picture[i].shift;
+    }
+    return 0;
+}
+
+/* The squeeze's fixed point. It moves 3 pixels against each pixel of view
+ * shift, so the buffer holds the shifted view around its own centre: game x
+ * centre + shift lands on the buffer's centre. */
+static float WidescreenPivot(int shift) {
+    return (float)display_size.x * 0.5f - (float)shift * WS_SQUEEZE / (1.0f - WS_SQUEEZE);
+}
+
+static float WidescreenCentre(void) {
+    return (float)display_area.x + WidescreenPivot(WidescreenDrawShift());
+}
+
+static int WidescreenMargin(void) { return (display_size.x + 5) / 6; }
+
+/* An untextured fill across the whole screen width (fades, flashes, dimmed
+ * backdrops) is stretched by the margin on both sides, so it covers the
+ * extra picture too. */
+static void WidenFullWidthFill(Vertex* v, int n) {
+    if (!WidescreenDraw()) {
+        return;
+    }
+    int origin = draw_offset.x - display_area.x;
+    int min_x = v[0].x, max_x = v[0].x;
+    for (int i = 1; i < n; ++i) {
+        min_x = SDL_min(min_x, v[i].x);
+        max_x = SDL_max(max_x, v[i].x);
+    }
+    if (origin + min_x > 0 || origin + max_x < display_size.x) {
+        return;
+    }
+    int margin = WidescreenMargin() + SDL_abs(WidescreenDrawShift());
+    for (int i = 0; i < n; ++i) {
+        int shift = v[i].x == min_x ? -margin : (v[i].x == max_x ? margin : 0);
+        v[i].x = (short)(v[i].x + shift);
+        v[i].pgxp_pos[0] += (float)shift;
+    }
+}
+
 static PsyzOverlayInitCB_SDL3GPU overlay_init_cb;
 PsyzOverlayInitCB_SDL3GPU Psyz_OverlayInit_SDL3GPU(
     PsyzOverlayInitCB_SDL3GPU cb) {
@@ -871,6 +946,50 @@ static void PlatformBackend_Present(void) {
 
                 WndSize win = {(int)sc_w, (int)sc_h};
                 SDL_Rect dst = FitGameToWindow(game_aspect, win);
+                bool ws_view = false;
+
+                /* Widescreen: the buffer holds 4/3 of the screen's width,
+                 * around the screen's centre plus the view's shift (see
+                 * Psyz_VideoSetWidescreenPicture). A 16:9 window of it (for
+                 * the screen's pixel aspect) is shown around that point. Past
+                 * the picture the swapchain clear leaves black; a room
+                 * narrower than the window is centred, with even bars. */
+                if (widescreen && !rgb24 && !debug_show_vram && game_aspect > 0.0f) {
+                    const float w = (float)display_size.x, centre = w * 0.5f;
+                    const float buffer_half = centre / WS_SQUEEZE;
+                    const float half = WidescreenViewHalf(game_aspect);
+                    int picture = -1;
+                    for (int i = 0; i < 2; ++i) {
+                        if (ws_picture[i].y == display_area.y) picture = i;
+                    }
+                    const int shift = picture >= 0 ? ws_picture[picture].shift : 0;
+                    const float pivot = WidescreenPivot(shift);
+                    float left = centre + (float)shift - buffer_half;
+                    float right = centre + (float)shift + buffer_half;
+                    if (picture >= 0 && ws_picture[picture].left < ws_picture[picture].right) {
+                        left = SDL_max(left, (float)ws_picture[picture].left);
+                        right = SDL_min(right, (float)ws_picture[picture].right);
+                    }
+                    const float view_l = centre + (float)shift - half;
+                    const float view_r = centre + (float)shift + half;
+                    const float shown_l = SDL_max(view_l, left);
+                    const float shown_r = SDL_max(shown_l, SDL_min(view_r, right));
+                    /* game x -> fraction of the squeezed buffer */
+                    const float f0 = (pivot + (shown_l - pivot) * WS_SQUEEZE) / w;
+                    const float f1 = (pivot + (shown_r - pivot) * WS_SQUEEZE) / w;
+                    dst = FitGameToWindow(16.0f / 9.0f, win);
+                    const int dx0 = dst.x + (int)SDL_lroundf((shown_l - view_l) / (2.0f * half) * (float)dst.w);
+                    const int dx1 = dst.x + (int)SDL_lroundf((shown_r - view_l) / (2.0f * half) * (float)dst.w);
+                    const Uint32 sx0 = (Uint32)SDL_lroundf(f0 * (float)src.w);
+                    const Uint32 sx1 = (Uint32)SDL_lroundf(f1 * (float)src.w);
+                    if (sx1 > sx0 && dx1 > dx0) {
+                        src.x += sx0;
+                        src.w = sx1 - sx0;
+                        dst.x = dx0;
+                        dst.w = dx1 - dx0;
+                    }
+                    ws_view = true;
+                }
 
                 const SDL_GPUBlitInfo blit = {
                     .source = src,
@@ -886,7 +1005,9 @@ static void PlatformBackend_Present(void) {
                     // vertical bars around the game output are black
                     .load_op = SDL_GPU_LOADOP_CLEAR,
                     .clear_color = {0.0f, 0.0f, 0.0f, 1.0f},
-                    .filter = SDL_GPU_FILTER_NEAREST,
+                    // the widescreen stretch is 4/3 per game pixel: nearest
+                    // would make every third column wider
+                    .filter = ws_view ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST,
                 };
                 SDL_BlitGPUTexture(cmd, &blit);
             }
@@ -1222,6 +1343,52 @@ int Psyz_VideoSetModelFiltering(int enabled) {
 }
 int Psyz_VideoGetModelFiltering(void) { return set_model_filtering; }
 
+int Psyz_VideoSetWidescreen(int enabled) {
+    if ((enabled != 0) != widescreen) {
+        Draw_FlushBuffer();
+        widescreen = enabled != 0;
+        ws_picture[0].y = ws_picture[1].y = -1;
+    }
+    return 0;
+}
+int Psyz_VideoGetWidescreen(void) { return widescreen; }
+void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
+    int slot = ws_picture[0].y == buffer_y ? 0 : (ws_picture[1].y == buffer_y ? 1 : -1);
+    if (slot < 0) {
+        slot = ws_picture[0].y < 0 ? 0 : 1;
+    }
+    if (ws_picture[slot].y != buffer_y && ws_picture[0].y >= 0 && ws_picture[1].y >= 0) {
+        /* a third buffer: forget both, the presenter falls back to all */
+        ws_picture[1].y = -1;
+        slot = 0;
+    }
+    /* The view slides towards the side that has picture at a room's end, so
+     * the end of the picture lines up with the view's edge, but never so far
+     * that the game's own screen leaves the view; a picture narrower than
+     * the view is centred. Drawing into the buffer squeezes around the
+     * shifted point from here on, so the buffer holds the shifted view. */
+    Draw_FlushBuffer();
+    const float centre = (float)display_size.x * 0.5f;
+    const float half =
+        WidescreenViewHalf(GetCurrentGameAspectRatio(display_size.x, display_size.y));
+    const float max_shift = SDL_max(0.0f, half - centre);
+    float shift = 0.0f;
+    /* whole pixels, rounded towards the picture so no sliver of black shows */
+    if (left < right) {
+        if ((float)(right - left) <= 2.0f * half) {
+            shift = SDL_roundf((float)(left + right) * 0.5f - centre);
+        } else if (centre - half < (float)left) {
+            shift = SDL_ceilf((float)left - (centre - half));
+        } else if (centre + half > (float)right) {
+            shift = SDL_floorf((float)right - (centre + half));
+        }
+    }
+    ws_picture[slot].y = buffer_y;
+    ws_picture[slot].left = left;
+    ws_picture[slot].right = right;
+    ws_picture[slot].shift = (int)SDL_clamp(shift, -max_shift, max_shift);
+}
+
 static void ApplyDisplayPendingChanges() {
     if (!sdl3_window && !InitPlatform()) {
         return;
@@ -1266,6 +1433,13 @@ void Draw_DisplayEnable(unsigned int on) {
 }
 
 void Draw_DisplayArea(unsigned int x, unsigned int y) {
+    /* A buffer's picture span lasts until the display leaves it: the next
+     * frame drawn there sets a new one, or draws without one (all shown). */
+    if ((int)y != display_area.y) {
+        for (int i = 0; i < 2; ++i) {
+            if (ws_picture[i].y == display_area.y) ws_picture[i].y = -1;
+        }
+    }
     display_area.x = (int)x;
     display_area.y = (int)y;
     if (UseSoftwareBackend()) return;
@@ -1437,6 +1611,9 @@ int Draw_PushPrim(u_long* packets, int max_len) {
             if (!isGouraud || !isShadeTex) {
                 VRGBA(vertex_cur[1]) = VRGBA(vertex_cur[2]) =
                     VRGBA(vertex_cur[3]) = VRGBA(vertex_cur[0]);
+            }
+            if (!isTextured) {
+                WidenFullWidthFill(vertex_cur, nVertices);
             }
 
             {
@@ -1661,6 +1838,9 @@ int Draw_PushPrim(u_long* packets, int max_len) {
         }
         VRGBA(vertex_cur[1]) = VRGBA(vertex_cur[2]) = VRGBA(vertex_cur[3]) =
             VRGBA(vertex_cur[0]);
+        if (!isTextured) {
+            WidenFullWidthFill(vertex_cur, 4);
+        }
         index_cur[0] = n_vertices + 0;
         index_cur[1] = n_vertices + 1;
         index_cur[2] = n_vertices + 2;
@@ -1955,6 +2135,19 @@ void Draw_FlushBuffer(void) {
     }
     SDL_EndGPUCopyPass(copy);
 
+    /* Widescreen squeezes X around the display buffer's centre. A clip
+     * narrower than the screen (a menu list) is squeezed with its contents;
+     * the full-width one is kept, so what lies past the screen's edges stays. */
+    const float ws_squeeze = WidescreenDraw() ? WS_SQUEEZE : 1.0f;
+    const float ws_centre = WidescreenCentre();
+    SDL_Rect clip = scissor_rect;
+    if (ws_squeeze < 1.0f && clip.w < display_size.x) {
+        float x0 = ws_centre + ((float)clip.x - ws_centre) * ws_squeeze;
+        float x1 = ws_centre + ((float)(clip.x + clip.w) - ws_centre) * ws_squeeze;
+        clip.x = (int)SDL_floorf(x0);
+        clip.w = (int)SDL_ceilf(x1) - clip.x;
+    }
+
     /* Native VRAM is independently rasterized: gameplay readback and texture
      * feedback must not depend on high-resolution sample positions. */
     for (unsigned target_index=0; target_index<(scaled_vram_render ? 2u : 1u);
@@ -1967,10 +2160,10 @@ void Draw_FlushBuffer(void) {
             int end=start+3;
             if (!semi) while (end<n_indices && vertex_buf[index_buf[end]].a!=0x80) end+=3;
             if (semi) {
-                int x0=(scissor_rect.x+scissor_rect.w)*(int)target_scale;
-                int y0=(scissor_rect.y+scissor_rect.h)*(int)target_scale;
-                int x1=scissor_rect.x*(int)target_scale;
-                int y1=scissor_rect.y*(int)target_scale;
+                int x0=(clip.x+clip.w)*(int)target_scale;
+                int y0=(clip.y+clip.h)*(int)target_scale;
+                int x1=clip.x*(int)target_scale;
+                int y1=clip.y*(int)target_scale;
                 for (int i=start;i<end;++i) {
                     const Vertex* v=&vertex_buf[index_buf[i]];
                     float bias=((v->t&TPAGE_POLYGON) && target_scale==1)?0.5f:0.0f;
@@ -1978,15 +2171,16 @@ void Draw_FlushBuffer(void) {
                         (v->t&TPAGE_POLYGON) && v->pgxp_pos[2]>0.0f;
                     float vx=use_pgxp ? v->pgxp_pos[0] : (float)v->x;
                     float vy=use_pgxp ? v->pgxp_pos[1] : (float)v->y;
-                    float x=(draw_offset.x+(vx+bias)*GetDrawGridXScale())*target_scale;
+                    float x=draw_offset.x+(vx+bias)*GetDrawGridXScale();
+                    x=(ws_centre+(x-ws_centre)*ws_squeeze)*target_scale;
                     float y=(draw_offset.y+vy+bias)*target_scale;
                     x0=SDL_min(x0,(int)SDL_floorf(x)-1);x1=SDL_max(x1,(int)SDL_ceilf(x)+1);
                     y0=SDL_min(y0,(int)SDL_floorf(y)-1);y1=SDL_max(y1,(int)SDL_ceilf(y)+1);
                 }
-                x0=SDL_max(x0,SDL_max(0,scissor_rect.x)*(int)target_scale);
-                y0=SDL_max(y0,SDL_max(0,scissor_rect.y)*(int)target_scale);
-                x1=SDL_min(x1,SDL_min(VRAM_W,scissor_rect.x+scissor_rect.w)*(int)target_scale);
-                y1=SDL_min(y1,SDL_min(VRAM_H,scissor_rect.y+scissor_rect.h)*(int)target_scale);
+                x0=SDL_max(x0,SDL_max(0,clip.x)*(int)target_scale);
+                y0=SDL_max(y0,SDL_max(0,clip.y)*(int)target_scale);
+                x1=SDL_min(x1,SDL_min(VRAM_W,clip.x+clip.w)*(int)target_scale);
+                y1=SDL_min(y1,SDL_min(VRAM_H,clip.y+clip.h)*(int)target_scale);
                 if (x1<=x0 || y1<=y0) {start=end;continue;}
                 SDL_GPUCopyPass* blend_copy=SDL_BeginGPUCopyPass(cmd);
                 SDL_GPUTextureLocation from={.texture=target_index ? scaled_vram_render : vram_render,
@@ -2006,7 +2200,7 @@ void Draw_FlushBuffer(void) {
                 const float grid_scale_x = GetDrawGridXScale();
                 const float render_scale = (float)target_scale;
                 const SDL_GPUViewport grid_viewport = {
-                    .x = (float)draw_offset.x * render_scale * (1.0f - grid_scale_x),
+                    .x = (float)draw_offset.x * (1.0f - grid_scale_x) * render_scale,
                     .y = 0.0f,
                     .w = (float)VRAM_W * render_scale * grid_scale_x,
                     .h = (float)VRAM_H * render_scale,
@@ -2016,8 +2210,8 @@ void Draw_FlushBuffer(void) {
                 SDL_SetGPUViewport(pass, &grid_viewport);
             }
             SDL_Rect scaled_scissor = {
-                scissor_rect.x * (int)target_scale, scissor_rect.y * (int)target_scale,
-                scissor_rect.w * (int)target_scale, scissor_rect.h * (int)target_scale};
+                clip.x * (int)target_scale, clip.y * (int)target_scale,
+                clip.w * (int)target_scale, clip.h * (int)target_scale};
             SDL_SetGPUScissor(pass, &scaled_scissor);
             const SDL_GPUBufferBinding vb = {.buffer = vbuf};
             SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
@@ -2027,10 +2221,17 @@ void Draw_FlushBuffer(void) {
                 {.texture=vram_sample,.sampler=vram_sampler},
                 {.texture=destination_sample,.sampler=vram_sampler}};
             SDL_BindGPUFragmentSamplers(pass,0,sampler_binding,2);
-            const float offset_ubo[4] = {
+            /* The viewport maps shader x to offset * (1 - grid) + x * grid;
+             * the shader squeezes around the centre in its own space, so
+             * VRAM x = centre + (offset + x * grid - centre) * squeeze. */
+            const float grid_x = GetDrawGridXScale();
+            const float offset_ubo[8] = {
                 (float)draw_offset.x, (float)draw_offset.y,
                 (target_index != 0 && geometry_correction) ? 1.0f : 0.0f,
-                target_scale > 1 ? 1.0f : 0.0f};
+                target_scale > 1 ? 1.0f : 0.0f,
+                ws_squeeze,
+                (ws_centre - (float)draw_offset.x * (1.0f - grid_x)) / grid_x,
+                0.0f, 0.0f};
             SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
             const u32 color_pass[4]={semi ? 2u : 0u,target_scale,
                 draw_grid_source_width==draw_grid_target_width,
