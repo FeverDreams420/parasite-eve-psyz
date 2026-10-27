@@ -31,6 +31,7 @@ int Psyz_AudioIsPaused(void);
 unsigned Psyz_KernelAudioBatch(unsigned maximum);
 void Psyz_KernelAdvanceAudio(unsigned frames);
 void Psyz_KernelPauseHostClock(int paused);
+void Psyz_KernelSetHostClockSpeed(unsigned speed);
 
 // Discard prefetched external CD input without resetting SPU voices/reverb.
 void Psyz_SpuFlushCdSamples(void);

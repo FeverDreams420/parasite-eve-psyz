@@ -222,6 +222,15 @@ static PsyzDitherMode dither_mode = PSYZ_DITHER_AUTO;
 static bool use_driver_vsync = false;
 static PsyzVideoStats gpu_stats = {0};
 
+// game speed (Psyz_VideoSetSpeed): the VSync mode is never changed for it
+static unsigned game_speed = 1;
+static Uint64 last_present_time = 0;
+static bool present_skip = false; // this frame is not shown
+
+static Uint32 WallVblankCount(void) {
+    return (Uint32)((double)SDL_GetTicksNS() * target_frame_rate * game_speed / 1e9);
+}
+
 static void PollEvents(void);
 
 // overlay callbacks shared across backends
@@ -439,9 +448,13 @@ static void WaitForNextFrame(void) {
     (void)elapsed_us;
     Psyz_WebWaitForNextFrame();
 #else
-    if (!use_driver_vsync && vsync_mode != PSYZ_VSYNC_LIMITLESS) {
+    /* Above normal speed driver VSync no longer paces every frame (most are
+     * not shown), so the limiter does, at the faster rate. */
+    const double frame_time_us = target_frame_time_us / game_speed;
+    if ((!use_driver_vsync || game_speed > 1) &&
+        vsync_mode != PSYZ_VSYNC_LIMITLESS) {
         double time_to_wait_us =
-            target_frame_time_us - elapsed_us + drift_compensation;
+            frame_time_us - elapsed_us + drift_compensation;
 
         // only wait if we're ahead of schedule (not running slow)
         if (time_to_wait_us > 100.0) { // more than 0.1ms to wait
@@ -452,7 +465,7 @@ static void WaitForNextFrame(void) {
             }
 
             // busy-wait for precision
-            double target_elapsed = target_frame_time_us + drift_compensation;
+            double target_elapsed = frame_time_us + drift_compensation;
             while (GetElapsedMicroseconds(
                        last_frame_time, SDL_GetPerformanceCounter()) <
                    target_elapsed) {
@@ -463,7 +476,7 @@ static void WaitForNextFrame(void) {
         Uint64 frame_end_time = SDL_GetPerformanceCounter();
         double actual_frame_time =
             GetElapsedMicroseconds(last_frame_time, frame_end_time);
-        double frame_error = actual_frame_time - target_frame_time_us;
+        double frame_error = actual_frame_time - frame_time_us;
 
         // apply gentle correction (10% per frame)
         drift_compensation -= frame_error * 0.1;
@@ -481,7 +494,7 @@ static void WaitForNextFrame(void) {
         GetElapsedMicroseconds(last_frame_time, frame_end_time);
     gpu_stats.last_draw_time_us =
         GetElapsedMicroseconds(last_frame_time, finish_time);
-    gpu_stats.target_frame_time_us = target_frame_time_us;
+    gpu_stats.target_frame_time_us = target_frame_time_us / game_speed;
     gpu_stats.total_frames++;
     gpu_stats.using_driver_vsync = use_driver_vsync;
 
@@ -490,6 +503,23 @@ static void WaitForNextFrame(void) {
 
 /* Implemented by the existing SDL audio backend; no device in video-clock mode. */
 void Sdl3Audio_VBlank(bool pal);
+void Sdl3Audio_SetSpeed(unsigned speed);
+
+/* Above normal speed with driver VSync, show a frame only once most of a
+ * refresh has passed since the last one shown: presents never wait on a
+ * full swapchain queue and the newest frame is the one on screen. */
+static bool SkipPresent(void) {
+    if (game_speed < 2 || !use_driver_vsync) {
+        return false;
+    }
+    Uint64 now = SDL_GetPerformanceCounter();
+    if (last_present_time &&
+        GetElapsedMicroseconds(last_present_time, now) < target_frame_time_us * 0.75) {
+        return true;
+    }
+    last_present_time = now;
+    return false;
+}
 
 int Psyz_VideoVSync(int mode) {
     Uint32 now_us;
@@ -501,13 +531,15 @@ int Psyz_VideoVSync(int mode) {
          * Wall time cannot drive this counter in an accelerated runner. */
         if (vsync_mode == PSYZ_VSYNC_LIMITLESS)
             return (int)(limitless_vblank_base + (Uint32)(gpu_stats.total_frames - limitless_frame_base));
-        return (int)((Uint32)((double)SDL_GetTicksNS() * target_frame_rate / 1e9) + vblank_clock_offset);
+        return (int)(WallVblankCount() + vblank_clock_offset);
     }
     // a line is approximated as 64 us
     now_us = (Uint32)(SDL_GetTicksNS() / 1000);
     ret = (unsigned short)((now_us - last_vsync_us) >> 6);
     if (mode == 0) {
+        present_skip = SkipPresent();
         PlatformBackend_Present();
+        present_skip = false;
         PollEvents();
         WaitForNextFrame();
         Sdl3Audio_VBlank(is_pal);
@@ -529,8 +561,7 @@ void Psyz_PauseHostClock_SDL3(bool paused) {
             limitless_vblank_base=host_clock_pause_count;
             limitless_frame_base=gpu_stats.total_frames;
         }else{
-            Uint32 wall=(Uint32)((double)SDL_GetTicksNS()*target_frame_rate/1e9);
-            vblank_clock_offset=host_clock_pause_count-wall;
+            vblank_clock_offset=host_clock_pause_count-WallVblankCount();
         }
         drift_compensation=0.0;
         last_frame_time=SDL_GetPerformanceCounter();
@@ -549,8 +580,7 @@ int Psyz_VideoSetVsyncMode(PsyzVsyncMode mode) {
         limitless_vblank_base = previous_count;
         limitless_frame_base = gpu_stats.total_frames;
     } else {
-        Uint32 clock_count = (Uint32)((double)SDL_GetTicksNS() * target_frame_rate / 1e9);
-        vblank_clock_offset = previous_count - clock_count;
+        vblank_clock_offset = previous_count - WallVblankCount();
     }
     if (sdl3_window && is_platform_init_successful) {
         ConfigureVSync(target_frame_rate);
@@ -559,6 +589,29 @@ int Psyz_VideoSetVsyncMode(PsyzVsyncMode mode) {
 }
 
 PsyzVsyncMode Psyz_VideoGetVsyncMode(void) { return vsync_mode; }
+
+int Psyz_VideoSetSpeed(unsigned speed) {
+    if (speed < 1 || speed > PSYZ_SPEED_MAX) {
+        return -1;
+    }
+    if (speed == game_speed) {
+        return 0;
+    }
+    // the blank count carries on from where it is, at the new rate
+    Uint32 previous_count = (Uint32)Psyz_VideoVSync(-1);
+    game_speed = speed;
+    if (vsync_mode != PSYZ_VSYNC_LIMITLESS && !host_clock_pause_depth) {
+        vblank_clock_offset = previous_count - WallVblankCount();
+    }
+    Psyz_KernelSetHostClockSpeed(speed);
+    Sdl3Audio_SetSpeed(speed);
+    drift_compensation = 0.0;
+    last_frame_time = SDL_GetPerformanceCounter();
+    last_present_time = 0;
+    return 0;
+}
+
+unsigned Psyz_VideoGetSpeed(void) { return game_speed; }
 
 static int s_dither = 0;
 static inline int GetCurrentDither(void) {

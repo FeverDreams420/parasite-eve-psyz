@@ -18,6 +18,14 @@ int Psyz_AudioSetOutputVolume(unsigned percent) {
 }
 unsigned Psyz_AudioGetOutputVolume(void) { return output_volume; }
 
+/* Game speed: the device pulls SPU samples that much faster, keeping every
+ * voice, CD stream and sequence in step with the game (higher pitch). */
+static unsigned audio_speed = 1;
+void Sdl3Audio_SetSpeed(unsigned speed) {
+    audio_speed = speed;
+    if (sdl_stream) SDL_SetAudioStreamFrequencyRatio(sdl_stream, (float)speed);
+}
+
 static SDL_Mutex* mutex;
 static bool video_clock, video_paused;
 static unsigned video_remainder;
@@ -103,6 +111,7 @@ int Psyz_AudioInit(void) {
     }
 
     SDL_SetAudioStreamGain(sdl_stream, (float)output_volume / 100.0f);
+    SDL_SetAudioStreamFrequencyRatio(sdl_stream, (float)audio_speed);
     if (!SDL_ResumeAudioStreamDevice(sdl_stream)) {
         WARNF("failed to resume audio device: %s", SDL_GetError());
     }

@@ -983,12 +983,13 @@ static void PlatformBackend_Present(void) {
 
     ApplyPendingInternalRes();
 
-    SDL_GPUTexture* rgb24 = disp_on && display_rgb24 && !debug_show_vram ? PrepareRgb24Display() : NULL;
+    SDL_GPUTexture* rgb24 = disp_on && display_rgb24 && !debug_show_vram && !present_skip ? PrepareRgb24Display() : NULL;
     SDL_GPUCommandBuffer* cmd = AcquireCmd();
     if (!cmd) {
         return;
     }
-    if (swapchain_ok) {
+    // a skipped frame still submits its drawing, without a swapchain image
+    if (swapchain_ok && !present_skip) {
         SDL_GPUTexture* swapchain = NULL;
         Uint32 sc_w = 0, sc_h = 0;
         if (!SDL_WaitAndAcquireGPUSwapchainTexture(

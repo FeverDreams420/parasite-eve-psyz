@@ -143,8 +143,9 @@ static AtomicWord audio_clock=-1;
 static AtomicTime audio_time_us;
 static unsigned audio_time_fraction;
 static AtomicWord host_clock_paused;
+static AtomicWord host_clock_speed = 1;
+/* Kernel time = wall time * speed - offset (modulo 2^64). */
 static AtomicTime host_clock_frozen_us, host_clock_offset_us;
-static uint64_t host_clock_pause_started_us;
 
 static int UsesAudioClock(void) {
     long mode=AtomicLoad(&audio_clock);
@@ -159,7 +160,8 @@ static int UsesAudioClock(void) {
 static uint64_t KernelNowUs(void) {
     if(UsesAudioClock())return AtomicTimeLoad(&audio_time_us);
     if(AtomicLoad(&host_clock_paused))return AtomicTimeLoad(&host_clock_frozen_us);
-    return Psyz_OsNowUs()-AtomicTimeLoad(&host_clock_offset_us);
+    return Psyz_OsNowUs()*(uint64_t)AtomicLoad(&host_clock_speed)-
+           AtomicTimeLoad(&host_clock_offset_us);
 }
 
 static void KernelInit(void) {
@@ -569,14 +571,29 @@ void Psyz_KernelPauseHostClock(int paused) {
     if(UsesAudioClock())return;
     KernelLock();
     if(paused && !AtomicLoad(&host_clock_paused)){
-        host_clock_pause_started_us=Psyz_OsNowUs();
-        AtomicTimeStore(&host_clock_frozen_us,host_clock_pause_started_us-
-                         AtomicTimeLoad(&host_clock_offset_us));
+        AtomicTimeStore(&host_clock_frozen_us,KernelNowUs());
         AtomicStore(&host_clock_paused,1);
     }else if(!paused && AtomicLoad(&host_clock_paused)){
-        AtomicTimeStore(&host_clock_offset_us,AtomicTimeLoad(&host_clock_offset_us)+
-                         Psyz_OsNowUs()-host_clock_pause_started_us);
+        AtomicTimeStore(&host_clock_offset_us,
+            Psyz_OsNowUs()*(uint64_t)AtomicLoad(&host_clock_speed)-
+            AtomicTimeLoad(&host_clock_frozen_us));
         AtomicStore(&host_clock_paused,0);
+    }
+    KernelUnlock();
+    Psyz_OsBellRing(bell_irq);
+}
+
+/* Root counters run `speed` times faster from now on, without a jump.
+ * Offline playback takes its time from the mixed audio instead. */
+void Psyz_KernelSetHostClockSpeed(unsigned speed) {
+    if(UsesAudioClock())return;
+    KernelLock();
+    if(AtomicLoad(&host_clock_paused)){
+        AtomicStore(&host_clock_speed,(long)speed);
+    }else{
+        uint64_t now=KernelNowUs();
+        AtomicStore(&host_clock_speed,(long)speed);
+        AtomicTimeStore(&host_clock_offset_us,Psyz_OsNowUs()*(uint64_t)speed-now);
     }
     KernelUnlock();
     Psyz_OsBellRing(bell_irq);
