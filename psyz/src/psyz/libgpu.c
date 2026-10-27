@@ -89,7 +89,8 @@ static void VramCopyLoad(const RECT* rect, const u_long* data) {
     const u16* src = (const u16*)data;
     for (int j = 0; j < rect->h; j++) {
         size_t row = (size_t)(rect->y + j) * VRAM_W + rect->x;
-        memcpy(vram_copy + row, src + (size_t)j * rect->w, rect->w * sizeof(u16));
+        memcpy(
+            vram_copy + row, src + (size_t)j * rect->w, rect->w * sizeof(u16));
         memset(vram_copy_known + row, 1, rect->w);
     }
 }
@@ -279,13 +280,17 @@ int Psyz_GpuExeque() {
 
 /* Native DR_* arrays contain u_long words, while combined packets retain
  * packed 32-bit GP0 words. MargePrim's reserved NOP makes the format explicit
- * without changing the tag ABI or relying on the first command being a shape. */
+ * without changing the tag ABI or relying on the first command being a shape.
+ */
 static int is_packed_command_stream(const u32* words, int count) {
-    if (count <= 0) return 0;
+    if (count <= 0)
+        return 0;
     unsigned int code = words[0] >> 24;
-    if (code >= 0x20 && code < 0x80) return 1;
+    if (code >= 0x20 && code < 0x80)
+        return 1;
     for (int i = 0; i < count; ++i)
-        if (words[i] == PSYZ_MERGED_PRIM_NOP) return 1;
+        if (words[i] == PSYZ_MERGED_PRIM_NOP)
+            return 1;
     return 0;
 }
 
@@ -321,12 +326,14 @@ static void GPU_Enqueue(u_long* packets) {
             // Gpu code is usually written to a u_long array, which will work
             // fine on both 32-bit and 64-bit compiled code.
             // But primitives are mapped from structs, we need to align the data
-            if (is_packed_command_stream((const u32*)env->code, (int)env->len)) {
+            if (is_packed_command_stream(
+                    (const u32*)env->code, (int)env->len)) {
                 // it is a prim, we need to split
                 u32* prim_data = (u32*)env->code;
                 for (u_long i = 0; i < env->len; i++) {
                     queue_buf[queue_len + i] = prim_data[i];
-                    Psyz_GteCopyQueuedPgxpSxy(&prim_data[i], &queue_buf[queue_len+i], prim_data[i]);
+                    Psyz_GteCopyQueuedPgxpSxy(
+                        &prim_data[i], &queue_buf[queue_len + i], prim_data[i]);
                 }
             } else if (env->len > 0) {
                 memcpy(queue_buf + queue_len, env->code,
@@ -359,8 +366,10 @@ static int GPU_DataRead(RECT* rect, u_long* data) {
     return 0;
 }
 static int psyz_cwb(u32* data, s32 n) {
-    if (n <= 0) return 0;
-    if (!data || (size_t)n > LEN(queue_buf)) return -1;
+    if (n <= 0)
+        return 0;
+    if (!data || (size_t)n > LEN(queue_buf))
+        return -1;
     Psyz_GpuExeque();
     /* DrawPrim uses the same mixed ABI as OT packets: packed 32-bit
      * primitive fields, native command words for DR_* packets. It must
@@ -372,8 +381,9 @@ static int psyz_cwb(u32* data, s32 n) {
         }
     } else {
         memcpy(queue_buf, data, (size_t)n * sizeof(u_long));
-        for (int i=0;i<n;++i)
-            Psyz_GteCopyQueuedPgxpSxy((u_long*)data+i,&queue_buf[i],(unsigned)queue_buf[i]);
+        for (int i = 0; i < n; ++i)
+            Psyz_GteCopyQueuedPgxpSxy(
+                (u_long*)data + i, &queue_buf[i], (unsigned)queue_buf[i]);
     }
     queue_len = n;
     return Psyz_GpuExeque();
