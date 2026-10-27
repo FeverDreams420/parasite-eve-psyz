@@ -411,7 +411,7 @@ ZTEST(gpu, vram_copy_follows_uploads_fills_and_copies) {
 }
 
 ZTEST(gpu, optional_model_filter_and_ssaa_preserve_native_vram_and_text) {
-#if defined(__psyz) && !defined(__PSP__)
+#ifdef PSYZ_TEST_SDL_GPU
     const char* headless = getenv("PSYZ_HEADLESS");
     if (headless && !strcmp(headless, "1"))
         return;
@@ -527,12 +527,14 @@ ZTEST(gpu, optional_model_filter_and_ssaa_preserve_native_vram_and_text) {
     Psyz_VideoSetAntialiasing(0);
     Psyz_VideoSetModelFiltering(0);
     Psyz_VideoSetInternalResolution(1);
+#else
+    zskip("requires the SDL GPU renderer");
 #endif
 }
 
 /* A game may build its OT, wait for two vblanks, then submit that OT. */
 ZTEST(gpu, geometry_metadata_survives_present_before_submission) {
-#if defined(__psyz) && !defined(__PSP__)
+#ifdef PSYZ_TEST_SDL_GPU
     extern void Psyz_PgxpNextFrame(void);
     extern int Psyz_PgxpLookupVertex(
         const void*, unsigned int, float*, float*, float*);
@@ -577,6 +579,8 @@ ZTEST(gpu, geometry_metadata_survives_present_before_submission) {
     zassert_s32_eq(0, Psyz_PgxpLookupVertex(&xy, xy, &x, &y, &w));
     Psyz_VideoSetGeometryCorrection(0);
     Psyz_VideoSetInternalResolution(1);
+#else
+    zskip("requires the SDL GPU renderer");
 #endif
 }
 
@@ -1595,6 +1599,11 @@ ZTEST(gpu, rgb555_blend_rounding_and_overlap) {
                         result |= (unsigned)v << (5 * c);
                     }
                     background[index] = result;
+                    /* Retire cycled upload buffers periodically. The test
+                     * needs all color combinations, not thousands of GPU
+                     * staging buffers alive together on a software adapter. */
+                    if ((index & 127) == 127)
+                        DrawSync(0);
                 }
         }
         DrawSync(0);

@@ -972,6 +972,11 @@ ZTEST(events, akao_deinit_sequence_leaves_nothing_pending) {
 }
 
 ZTEST(events, rcnt3_event_fires_once_per_vblank) {
+#if defined(__psyz) && !defined(__PSP__)
+    /* Count emulated blanks, not thirty presentations which can each miss
+     * several wall-clock blanks on a loaded or software-rendered runner. */
+    Psyz_VideoSetVsyncMode(PSYZ_VSYNC_LIMITLESS);
+#endif
     long counted =
         ev_open(RCntCNT3, EvSpINT, EvMdINTR, cb_increase_handler_calls);
     EnableEvent(counted);
@@ -991,6 +996,11 @@ ZTEST(events, rcnt3_nointr_event_becomes_pending_every_vblank) {
 }
 
 ZTEST(events, hw_vblank_trap_event_fires_once_per_vblank) {
+#if defined(__psyz) && !defined(__PSP__)
+    /* Count emulated blanks, not thirty presentations which can each miss
+     * several wall-clock blanks on a loaded or software-rendered runner. */
+    Psyz_VideoSetVsyncMode(PSYZ_VSYNC_LIMITLESS);
+#endif
     long counted =
         ev_open(HwVBLANK, EvSpTRAP, EvMdINTR, cb_increase_handler_calls);
     EnableEvent(counted);

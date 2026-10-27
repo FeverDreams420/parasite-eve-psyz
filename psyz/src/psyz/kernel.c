@@ -1,5 +1,8 @@
 // PS1 kernel events, critical sections, root counters and the interrupt
 // controller behind libetc's callbacks.
+#ifdef __PSP__
+#include <pspkernel.h>
+#endif
 #include <psyz.h>
 #include <psyz/log.h>
 #include <kernel.h>
@@ -39,9 +42,6 @@ static inline void AtomicAdd(AtomicWord* p, long v) {
     _InterlockedExchangeAdd(p, v);
 }
 #else
-#ifdef __PSP__
-#include <pspkernel.h>
-#endif
 typedef long AtomicWord;
 typedef uint64_t AtomicTime;
 static inline uint64_t AtomicTimeLoad(AtomicTime* p) {
