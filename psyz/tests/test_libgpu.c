@@ -1602,8 +1602,11 @@ ZTEST(gpu, rgb555_blend_rounding_and_overlap) {
                     /* Retire cycled upload buffers periodically. The test
                      * needs all color combinations, not thousands of GPU
                      * staging buffers alive together on a software adapter. */
-                    if ((index & 127) == 127)
+                    if ((index & 127) == 127) {
                         DrawSync(0);
+                        StoreImage(&region, (u_long*)actual);
+                        DrawSync(0);
+                    }
                 }
         }
         DrawSync(0);

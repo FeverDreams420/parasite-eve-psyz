@@ -11,6 +11,10 @@
 #include <psyz.h>
 #include <libcd.h>
 #include <libspu.h>
+#if defined(__psyz) && !defined(__PSP__)
+#include <SDL3/SDL.h>
+static char* playback_saved_clock;
+#endif
 
 #ifdef _WIN32
 #include <direct.h>
@@ -737,6 +741,17 @@ static int make_dir(const char* path) {
 
 ZTEST_SETUP(libcd_playback) {
     int ret;
+#if defined(__psyz) && !defined(__PSP__)
+    /* These tests pull exact PCM themselves. Do not let an in-flight device
+     * callback consume the beginning of a stream on a loaded CI runner. */
+    const char* clock = SDL_getenv("PSYZ_AUDIO_CLOCK");
+    playback_saved_clock = clock ? SDL_strdup(clock) : NULL;
+    Psyz_AudioDestroy();
+    SDL_SetEnvironmentVariable(
+        SDL_GetEnvironment(), "PSYZ_AUDIO_CLOCK", "video", true);
+    zassert_s32_eq(0, Psyz_AudioInit());
+    Psyz_AudioPause();
+#endif
     reset_state("psyz_libcdplayback_test_");
     ret = make_dir(dir);
     if (ret == -1) {
@@ -751,6 +766,15 @@ ZTEST_TEARDOWN(libcd_playback) {
     Psyz_CdSetDiskPath(NULL);
     Psyz_CdShellOpen(0);
     Psyz_AudioDestroy();
+#if defined(__psyz) && !defined(__PSP__)
+    if (playback_saved_clock) {
+        SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_AUDIO_CLOCK",
+                                   playback_saved_clock, true);
+        SDL_free(playback_saved_clock);
+        playback_saved_clock = NULL;
+    } else
+        SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_AUDIO_CLOCK");
+#endif
     cleanup_files();
 }
 
