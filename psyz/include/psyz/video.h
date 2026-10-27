@@ -279,6 +279,40 @@ void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right);
 void Psyz_VideoSetWidescreenCentred(int enabled);
 
 /**
+ * @brief Psyz_VideoSetWidescreenPicture for a room that belongs between pixels
+ *
+ * As Psyz_VideoSetWidescreenPicture, for a frame whose room (its background
+ * and models) belongs dx, dy game pixels right and down of where the game
+ * draws it, for a camera the game keeps in whole pixels. Widescreen only:
+ * the room is drawn moved by whole pixels of the shown picture, chosen so
+ * the squeezed room keeps its texels' shape, and the presenter shows the
+ * rest, so slow pans move evenly at any internal resolution. A view that
+ * follows the picture's end follows it to the fraction. Only layers drawn
+ * while Psyz_VideoSetWidescreenField is on move; the presenter's part moves
+ * the whole picture, up to half a pixel of the shown picture. The game must
+ * draw 3 game pixels more past each side. Native VRAM under a high
+ * resolution picture keeps the game's own picture.
+ *
+ * @param buffer_y VRAM row of the buffer's drawing area
+ * @param dx, dy Where the room belongs, -2 to 2 game pixels
+ * @param camera_x The camera's whole-pixel x the room is drawn for (screen
+ *                 x = world x - camera_x plus a constant)
+ */
+void Psyz_VideoSetWidescreenPictureShifted(int buffer_y, int left, int right, float dx, float dy,
+                                           int camera_x);
+
+/**
+ * @brief Mark drawing as the room (see Psyz_VideoSetWidescreenPictureShifted)
+ *
+ * Psyz_VideoSetWidescreenPicture* turns it off. To switch it in
+ * ordering-table order, call it from a GP0 command handler (see
+ * Psyz_GpuRegisterCommandHandler).
+ *
+ * @param enabled Non-zero while the room is drawn
+ */
+void Psyz_VideoSetWidescreenField(int enabled);
+
+/**
  * @brief Synchronize with vertical blank
  *
  * Synchronize with the refresh rate mode set in Psyz_VideoSetVsyncMode.

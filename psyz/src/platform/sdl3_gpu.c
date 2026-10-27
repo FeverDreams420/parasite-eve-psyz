@@ -82,6 +82,8 @@ static bool antialiasing, set_antialiasing;
 static bool model_filtering, set_model_filtering;
 static SDL_GPUTexture* antialias_display;
 static Uint32 antialias_width, antialias_height;
+static SDL_GPUTexture* prescale_display;
+static Uint32 prescale_width, prescale_height;
 static unsigned set_internal_res = 1;
 static bool geometry_correction = false;
 static bool set_geometry_correction = false;
@@ -114,16 +116,28 @@ static struct {
     int y;
     int left, right;
     int shift;
-} ws_picture[2] = {{-1, 0, 0, 0}, {-1, 0, 0, 0}};
+    /* Psyz_VideoSetWidescreenPictureShifted: where the room belongs past
+     * where it is drawn, in game pixels relative to the view (ex, ey), the
+     * camera it is drawn for, and whether the picture's ends move with it */
+    bool field, ends_move;
+    float ex, ey;
+    int camera_x;
+} ws_picture[2] = {{-1, 0, 0, 0, false, false, 0.0f, 0.0f, 0}, {-1, 0, 0, 0, false, false, 0.0f, 0.0f, 0}};
 /* Psyz_VideoSetWidescreenCentred: drawing ignores the view's shift. */
 static bool ws_centred;
+/* Psyz_VideoSetWidescreenField: drawing is the room, it follows ex, ey. */
+static bool ws_field;
 
-static bool WidescreenDraw(void) {
-    return widescreen && !display_rgb24 && display_size.x > 0 &&
+/* The drawing area is inside the display's VRAM columns and the first two
+ * display heights of rows, where double buffers are stacked. */
+static bool DisplayBufferDraw(void) {
+    return !display_rgb24 && display_size.x > 0 &&
            display_size.y > 0 && draw_area_start.x >= display_area.x &&
            draw_area_end.x < display_area.x + display_size.x &&
            draw_area_start.y >= 0 && draw_area_end.y < 2 * display_size.y;
 }
+
+static bool WidescreenDraw(void) { return widescreen && DisplayBufferDraw(); }
 
 /* Half the 16:9 view's width in whole game pixels, for the screen's pixel
  * aspect (199 for 320x224), so its edges meet the picture's ends exactly;
@@ -133,14 +147,34 @@ static float WidescreenViewHalf(float game_aspect) {
     return SDL_floorf(SDL_min(w * (16.0f / 9.0f) / game_aspect, w / WS_SQUEEZE) * 0.5f);
 }
 
-/* The view's shift for the buffer the drawing area is in. */
-static int WidescreenDrawShift(void) {
+/* The picture of the buffer the drawing area is in, or -1. */
+static int WidescreenDrawPicture(void) {
     for (int i = 0; i < 2; ++i) {
         if (ws_picture[i].y >= 0 && draw_area_start.y >= ws_picture[i].y &&
             draw_area_start.y < ws_picture[i].y + display_size.y)
-            return ws_picture[i].shift;
+            return i;
     }
-    return 0;
+    return -1;
+}
+
+/* The view's shift for the buffer the drawing area is in. */
+static int WidescreenDrawShift(void) {
+    const int picture = WidescreenDrawPicture();
+    return picture >= 0 ? ws_picture[picture].shift : 0;
+}
+
+/* The part of a picture's room shift drawn into the buffer at scale n: the
+ * squeezed room moves by whole buffer pixels from frame to frame, so its
+ * texels keep their shape, and the presenter shows the rest (under half a
+ * buffer pixel). The room's grid is at whole game pixels from the camera,
+ * and the view's shift moves it 3/4 pixel per pixel in the buffer. */
+static void WidescreenFieldStep(int picture, float n, float* qx, float* qy) {
+    *qx = *qy = 0.0f;
+    if (picture < 0 || !ws_picture[picture].field) return;
+    const float sx = WS_SQUEEZE * n;
+    const float base = (float)(ws_picture[picture].camera_x + ws_picture[picture].shift);
+    *qx = SDL_roundf((ws_picture[picture].ex - base) * sx) / sx + base;
+    *qy = SDL_roundf(ws_picture[picture].ey * n) / n;
 }
 
 /* The squeeze's fixed point. It moves 3 pixels against each pixel of view
@@ -172,7 +206,8 @@ static void WidenFullWidthFill(Vertex* v, int n) {
     if (origin + min_x > 0 || origin + max_x < display_size.x) {
         return;
     }
-    int margin = WidescreenMargin() + SDL_abs(WidescreenDrawShift());
+    /* plus the room's step (WidescreenFieldStep) */
+    int margin = WidescreenMargin() + SDL_abs(WidescreenDrawShift()) + (ws_field ? 3 : 0);
     for (int i = 0; i < n; ++i) {
         int shift = v[i].x == min_x ? -margin : (v[i].x == max_x ? margin : 0);
         v[i].x = (short)(v[i].x + shift);
@@ -885,6 +920,54 @@ static SDL_GPUBlitRegion PrepareDisplayTexture(SDL_GPUCommandBuffer* cmd, SDL_GP
     return src;
 }
 
+/* Sharp bilinear for the widescreen stretch: a whole-number nearest prescale
+ * (kx, ky) of the buffer, so the final linear blit only shrinks and pixel
+ * edges stay crisp. x0..x1, y0..y1 is the part to show, in buffer pixels
+ * from the buffer's corner: the whole pixels around it are prescaled and
+ * the returned region picks it out to 1/k of a pixel, so the room can be
+ * shown less than a buffer pixel from where it is drawn. */
+static SDL_GPUBlitRegion PrescaleWidescreen(SDL_GPUCommandBuffer* cmd, SDL_GPUBlitRegion src,
+                                            float x0, float y0, float x1, float y1,
+                                            Uint32 kx, Uint32 ky) {
+    x0 = SDL_clamp(x0, 0.0f, (float)src.w);
+    x1 = SDL_clamp(x1, x0, (float)src.w);
+    y0 = SDL_clamp(y0, 0.0f, (float)src.h);
+    y1 = SDL_clamp(y1, y0, (float)src.h);
+    const Uint32 ix0 = (Uint32)SDL_floorf(x0), ix1 = (Uint32)SDL_ceilf(x1);
+    const Uint32 iy0 = (Uint32)SDL_floorf(y0), iy1 = (Uint32)SDL_ceilf(y1);
+    if (ix1 <= ix0 || iy1 <= iy0) return src;
+    kx = SDL_max(kx, 1u);
+    ky = SDL_max(ky, 1u);
+    const SDL_GPUBlitRegion whole = {.texture = src.texture,
+        .x = src.x + (Uint32)SDL_lroundf(x0), .y = src.y + (Uint32)SDL_lroundf(y0),
+        .w = SDL_max((Uint32)SDL_lroundf(x1 - x0), 1u), .h = SDL_max((Uint32)SDL_lroundf(y1 - y0), 1u)};
+    if (kx <= 1 && ky <= 1) return whole;
+    const Uint32 width = src.w * kx, height = src.h * ky;
+    if (!prescale_display || prescale_width != width || prescale_height != height) {
+        if (prescale_display) SDL_ReleaseGPUTexture(device, prescale_display);
+        const SDL_GPUTextureCreateInfo info = {
+            .type=SDL_GPU_TEXTURETYPE_2D, .format=SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            .usage=SDL_GPU_TEXTUREUSAGE_SAMPLER|SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+            .width=width, .height=height, .layer_count_or_depth=1, .num_levels=1,
+        };
+        prescale_display=SDL_CreateGPUTexture(device,&info);
+        prescale_width=prescale_display ? width : 0;
+        prescale_height=prescale_display ? height : 0;
+    }
+    if (!prescale_display) return whole;
+    const Uint32 pw = (ix1 - ix0) * kx, ph = (iy1 - iy0) * ky;
+    const SDL_GPUBlitInfo prescale={
+        .source={.texture=src.texture,.x=src.x+ix0,.y=src.y+iy0,.w=ix1-ix0,.h=iy1-iy0},
+        .destination={.texture=prescale_display,.w=pw,.h=ph},
+        .load_op=SDL_GPU_LOADOP_DONT_CARE,.filter=SDL_GPU_FILTER_NEAREST};
+    SDL_BlitGPUTexture(cmd,&prescale);
+    const Uint32 px = SDL_min((Uint32)SDL_lroundf((x0 - (float)ix0) * (float)kx), pw - 1);
+    const Uint32 py = SDL_min((Uint32)SDL_lroundf((y0 - (float)iy0) * (float)ky), ph - 1);
+    return (SDL_GPUBlitRegion){.texture=prescale_display, .x=px, .y=py,
+        .w=SDL_clamp((Uint32)SDL_lroundf((x1 - x0) * (float)kx), 1u, pw - px),
+        .h=SDL_clamp((Uint32)SDL_lroundf((y1 - y0) * (float)ky), 1u, ph - py)};
+}
+
 static void PlatformBackend_Present(void) {
     if (UseSoftwareBackend()) {
         finish_time = SDL_GetPerformanceCounter();
@@ -966,31 +1049,50 @@ static void PlatformBackend_Present(void) {
                     }
                     const int shift = picture >= 0 ? ws_picture[picture].shift : 0;
                     const float pivot = WidescreenPivot(shift);
+                    /* the room is shown where it belongs: the rest of its
+                     * shift past the step drawn (WidescreenFieldStep) */
+                    float rest_x = 0.0f, rest_y = 0.0f, ends_x = 0.0f;
+                    if (picture >= 0 && ws_picture[picture].field) {
+                        float qx, qy;
+                        WidescreenFieldStep(picture, (float)n, &qx, &qy);
+                        rest_x = ws_picture[picture].ex - qx;
+                        rest_y = ws_picture[picture].ey - qy;
+                        if (ws_picture[picture].ends_move) ends_x = ws_picture[picture].ex;
+                    }
                     float left = centre + (float)shift - buffer_half;
                     float right = centre + (float)shift + buffer_half;
                     if (picture >= 0 && ws_picture[picture].left < ws_picture[picture].right) {
-                        left = SDL_max(left, (float)ws_picture[picture].left);
-                        right = SDL_min(right, (float)ws_picture[picture].right);
+                        left = SDL_max(left, (float)ws_picture[picture].left + ends_x);
+                        right = SDL_min(right, (float)ws_picture[picture].right + ends_x);
                     }
                     const float view_l = centre + (float)shift - half;
                     const float view_r = centre + (float)shift + half;
                     const float shown_l = SDL_max(view_l, left);
                     const float shown_r = SDL_max(shown_l, SDL_min(view_r, right));
                     /* game x -> fraction of the squeezed buffer */
-                    const float f0 = (pivot + (shown_l - pivot) * WS_SQUEEZE) / w;
-                    const float f1 = (pivot + (shown_r - pivot) * WS_SQUEEZE) / w;
+                    const float f0 = (pivot + (shown_l - rest_x - pivot) * WS_SQUEEZE) / w;
+                    const float f1 = (pivot + (shown_r - rest_x - pivot) * WS_SQUEEZE) / w;
                     dst = FitGameToWindow(16.0f / 9.0f, win);
+                    /* whole prescale factors from the view's size, so they
+                     * hold while a picture end moves through the view */
+                    const float view_w = 2.0f * half * WS_SQUEEZE / w * (float)src.w;
+                    const Uint32 kx = (Uint32)SDL_max(1.0f, SDL_ceilf((float)dst.w / view_w - 0.001f));
+                    const Uint32 ky = src.h > 2 ? ((Uint32)dst.h + src.h - 3) / (src.h - 2) : 1;
                     const int dx0 = dst.x + (int)SDL_lroundf((shown_l - view_l) / (2.0f * half) * (float)dst.w);
                     const int dx1 = dst.x + (int)SDL_lroundf((shown_r - view_l) / (2.0f * half) * (float)dst.w);
-                    const Uint32 sx0 = (Uint32)SDL_lroundf(f0 * (float)src.w);
-                    const Uint32 sx1 = (Uint32)SDL_lroundf(f1 * (float)src.w);
+                    float sx0 = f0 * (float)src.w, sx1 = f1 * (float)src.w;
                     if (sx1 > sx0 && dx1 > dx0) {
-                        src.x += sx0;
-                        src.w = sx1 - sx0;
                         dst.x = dx0;
                         dst.w = dx1 - dx0;
+                    } else {
+                        sx0 = 0.0f;
+                        sx1 = (float)src.w;
                     }
+                    /* a buffer pixel off the top and bottom leaves room to
+                     * show the room up to half a pixel up or down */
+                    const float sy = rest_y * (float)n;
                     ws_view = true;
+                    src = PrescaleWidescreen(cmd, src, sx0, 1.0f - sy, sx1, (float)src.h - 1.0f - sy, kx, ky);
                 }
 
                 const SDL_GPUBlitInfo blit = {
@@ -1008,7 +1110,8 @@ static void PlatformBackend_Present(void) {
                     .load_op = SDL_GPU_LOADOP_CLEAR,
                     .clear_color = {0.0f, 0.0f, 0.0f, 1.0f},
                     // the widescreen stretch is 4/3 per game pixel: nearest
-                    // would make every third column wider
+                    // would make every third column wider, so the view is
+                    // prescaled and only this last step is linear
                     .filter = ws_view ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST,
                 };
                 SDL_BlitGPUTexture(cmd, &blit);
@@ -1062,6 +1165,9 @@ static void QuitPlatform(void) {
         if (antialias_display) SDL_ReleaseGPUTexture(device, antialias_display);
         antialias_display = NULL;
         antialias_width = antialias_height = 0;
+        if (prescale_display) SDL_ReleaseGPUTexture(device, prescale_display);
+        prescale_display = NULL;
+        prescale_width = prescale_height = 0;
         if (vram_render) {
             SDL_ReleaseGPUTexture(device, vram_render);
             vram_render = NULL;
@@ -1361,7 +1467,23 @@ void Psyz_VideoSetWidescreenCentred(int enabled) {
         ws_centred = enabled != 0;
     }
 }
+void Psyz_VideoSetWidescreenField(int enabled) {
+    if ((enabled != 0) != ws_field) {
+        Draw_FlushBuffer();
+        ws_field = enabled != 0;
+    }
+}
+static void SetWidescreenPicture(int buffer_y, int left, int right, bool field, float dx,
+                                 float dy, int camera_x);
 void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
+    SetWidescreenPicture(buffer_y, left, right, false, 0.0f, 0.0f, 0);
+}
+void Psyz_VideoSetWidescreenPictureShifted(int buffer_y, int left, int right, float dx, float dy,
+                                           int camera_x) {
+    SetWidescreenPicture(buffer_y, left, right, true, dx, dy, camera_x);
+}
+static void SetWidescreenPicture(int buffer_y, int left, int right, bool field, float dx,
+                                 float dy, int camera_x) {
     int slot = ws_picture[0].y == buffer_y ? 0 : (ws_picture[1].y == buffer_y ? 1 : -1);
     if (slot < 0) {
         slot = ws_picture[0].y < 0 ? 0 : 1;
@@ -1379,11 +1501,17 @@ void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
      * on, so the buffer holds the shifted view. */
     Draw_FlushBuffer();
     ws_centred = false;
+    ws_field = false;
     const float centre = (float)display_size.x * 0.5f;
     const float half =
         WidescreenViewHalf(GetCurrentGameAspectRatio(display_size.x, display_size.y));
     const float max_shift = SDL_max(0.0f, half - centre);
     float shift = 0.0f;
+    /* the view as it would be for the room where it belongs */
+    float exact_shift = 0.0f;
+    bool ends_move = false;
+    dx = SDL_clamp(dx, -2.0f, 2.0f);
+    dy = SDL_clamp(dy, -2.0f, 2.0f);
     if (left < right && (float)(right - left) < 2.0f * half) {
         left = 0;
         right = display_size.x;
@@ -1394,11 +1522,26 @@ void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
         } else if (centre + half > (float)right) {
             shift = SDL_floorf((float)right - (centre + half));
         }
+        if (centre - half < (float)left + dx) {
+            exact_shift = (float)left + dx - (centre - half);
+        } else if (centre + half > (float)right + dx) {
+            exact_shift = (float)right + dx - (centre + half);
+        }
+        ends_move = true;
     }
+    shift = SDL_clamp(shift, -max_shift, max_shift);
+    exact_shift = SDL_clamp(exact_shift, -max_shift, max_shift);
     ws_picture[slot].y = buffer_y;
     ws_picture[slot].left = left;
     ws_picture[slot].right = right;
-    ws_picture[slot].shift = (int)SDL_clamp(shift, -max_shift, max_shift);
+    ws_picture[slot].shift = (int)shift;
+    /* A view that follows the picture's end to the fraction keeps the room
+     * still on screen: only the room's shift past that is left to show. */
+    ws_picture[slot].field = field;
+    ws_picture[slot].ends_move = ends_move;
+    ws_picture[slot].ex = field ? dx - (exact_shift - shift) : 0.0f;
+    ws_picture[slot].ey = field ? dy : 0.0f;
+    ws_picture[slot].camera_x = camera_x;
 }
 
 static void ApplyDisplayPendingChanges() {
@@ -1847,6 +1990,15 @@ int Draw_PushPrim(u_long* packets, int max_len) {
             vertex_cur[2].v = tv + h;
             vertex_cur[3].u = tu + w;
             vertex_cur[3].v = tv + h;
+            /* Widescreen: a squeezed sprite reads only its own texels
+             * (psx.frag.glsl); otherwise the bounds hold anything. */
+            const bool own_texels = WidescreenDraw();
+            for (int i = 0; i < 4; ++i) {
+                vertex_cur[i].uv_bounds[0] = own_texels ? (float)tu : -32768.0f;
+                vertex_cur[i].uv_bounds[1] = own_texels ? (float)tv : -32768.0f;
+                vertex_cur[i].uv_bounds[2] = own_texels ? (float)(tu + w - 1) : 32767.0f;
+                vertex_cur[i].uv_bounds[3] = own_texels ? (float)(tv + h - 1) : 32767.0f;
+            }
         }
         VRGBA(vertex_cur[1]) = VRGBA(vertex_cur[2]) = VRGBA(vertex_cur[3]) =
             VRGBA(vertex_cur[0]);
@@ -2159,12 +2311,19 @@ void Draw_FlushBuffer(void) {
         clip.x = (int)SDL_floorf(x0);
         clip.w = (int)SDL_ceilf(x1) - clip.x;
     }
+    /* Widescreen: the room moves by its whole-pixel step (WidescreenFieldStep)
+     * in the shown picture; native VRAM under a high-resolution one keeps
+     * the game's own picture for read-backs. */
+    const int field_picture = ws_field && WidescreenDraw() ? WidescreenDrawPicture() : -1;
 
     /* Native VRAM is independently rasterized: gameplay readback and texture
      * feedback must not depend on high-resolution sample positions. */
     for (unsigned target_index=0; target_index<(scaled_vram_render ? 2u : 1u);
          ++target_index) {
         unsigned target_scale=target_index ? internal_res : 1;
+        float sub_x=0.0f, sub_y=0.0f;
+        if (target_index || !scaled_vram_render)
+            WidescreenFieldStep(field_picture, (float)target_scale, &sub_x, &sub_y);
         SDL_GPUTexture* destination_sample=target_index ? scaled_blend_sample : blend_sample;
         int start=0;
         while (start<n_indices) {
@@ -2181,8 +2340,8 @@ void Draw_FlushBuffer(void) {
                     float bias=((v->t&TPAGE_POLYGON) && target_scale==1)?0.5f:0.0f;
                     bool use_pgxp=target_index && geometry_correction &&
                         (v->t&TPAGE_POLYGON) && v->pgxp_pos[2]>0.0f;
-                    float vx=use_pgxp ? v->pgxp_pos[0] : (float)v->x;
-                    float vy=use_pgxp ? v->pgxp_pos[1] : (float)v->y;
+                    float vx=(use_pgxp ? v->pgxp_pos[0] : (float)v->x)+sub_x;
+                    float vy=(use_pgxp ? v->pgxp_pos[1] : (float)v->y)+sub_y;
                     float x=draw_offset.x+(vx+bias)*GetDrawGridXScale();
                     x=(ws_centre+(x-ws_centre)*ws_squeeze)*target_scale;
                     float y=(draw_offset.y+vy+bias)*target_scale;
@@ -2212,7 +2371,7 @@ void Draw_FlushBuffer(void) {
                 const float grid_scale_x = GetDrawGridXScale();
                 const float render_scale = (float)target_scale;
                 const SDL_GPUViewport grid_viewport = {
-                    .x = (float)draw_offset.x * (1.0f - grid_scale_x) * render_scale,
+                    .x = (float)draw_offset.x * render_scale * (1.0f - grid_scale_x),
                     .y = 0.0f,
                     .w = (float)VRAM_W * render_scale * grid_scale_x,
                     .h = (float)VRAM_H * render_scale,
@@ -2243,7 +2402,7 @@ void Draw_FlushBuffer(void) {
                 target_scale > 1 ? 1.0f : 0.0f,
                 ws_squeeze,
                 (ws_centre - (float)draw_offset.x * (1.0f - grid_x)) / grid_x,
-                0.0f, 0.0f};
+                sub_x, sub_y};
             SDL_PushGPUVertexUniformData(cmd, 0, offset_ubo, sizeof(offset_ubo));
             const u32 color_pass[4]={semi ? 2u : 0u,target_scale,
                 draw_grid_source_width==draw_grid_target_width,

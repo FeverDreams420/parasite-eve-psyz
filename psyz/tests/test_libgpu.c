@@ -223,6 +223,25 @@ ZTEST(gpu, widescreen_squeezes_display_buffer_drawing) {
     zexpect_s32_eq(0,row[50]&0x7FFF);
     Psyz_VideoSetWidescreenPicture(0,0,0);
 
+    /* two touching sprites whose joint lands on a quarter pixel: x 19..35
+     * on 54.25..66.25, 35..51 on 66.25..78.25. The pixels the joint cuts
+     * read their own sprite's first texel, not the VRAM column before it */
+    u16 texels[48*20];RECT page={640,0,48,20};
+    for(int i=0;i<LEN(texels);++i){int u=i%48;
+        texels[i]=u<8?0x7FFF:u<24?0x001F:u<32?0x7C00:0x03E0;}
+    LoadImage(&page,(u_long*)texels);
+    DRAWENV textured=draw;textured.tpage=getTPage(2,0,640,0);PutDrawEnv(&textured);
+    ClearImage(&clear,0,0,0);
+    SPRT left={0};setSprt(&left);setRGB0(&left,128,128,128);
+    setXY0(&left,19,90);setUV0(&left,8,0);setWH(&left,16,20);DrawPrim(&left);
+    SPRT right={0};setSprt(&right);setRGB0(&right,128,128,128);
+    setXY0(&right,35,90);setUV0(&right,32,0);setWH(&right,16,20);DrawPrim(&right);
+    DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
+    zexpect_s32_eq(0,row[53]&0x7FFF);
+    zexpect_s32_eq(0x001F,row[54]&0x7FFF);zexpect_s32_eq(0x001F,row[65]&0x7FFF);
+    zexpect_s32_eq(0x03E0,row[66]&0x7FFF);zexpect_s32_eq(0x03E0,row[77]&0x7FFF);
+    zexpect_s32_eq(0,row[78]&0x7FFF);
+
     /* off again: the margin is clipped as on the PlayStation */
     zassert_s32_eq(0,Psyz_VideoSetWidescreen(0));
     zassert_s32_eq(0,Psyz_VideoGetWidescreen());

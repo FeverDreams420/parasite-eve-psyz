@@ -811,7 +811,17 @@ void Psyz_VideoSetWidescreenPicture(int buffer_y, int left, int right) {
     (void)left;
     (void)right;
 }
+void Psyz_VideoSetWidescreenPictureShifted(int buffer_y, int left, int right, float dx, float dy,
+                                           int camera_x) {
+    (void)buffer_y;
+    (void)left;
+    (void)right;
+    (void)dx;
+    (void)dy;
+    (void)camera_x;
+}
 void Psyz_VideoSetWidescreenCentred(int enabled) { (void)enabled; }
+void Psyz_VideoSetWidescreenField(int enabled) { (void)enabled; }
 
 int Psyz_VideoGetGeometryCorrection(void) { return 0; }
 
