@@ -37,6 +37,7 @@ static int vram_area_x0, vram_area_y0, vram_area_x1, vram_area_y1;
 static int vram_area_marked = 0;
 
 int Psyz_GpuSetVramCopy(int enabled) {
+    vram_area_marked = 0;
     if (!enabled) {
         free(vram_copy);
         free(vram_copy_known);
@@ -84,6 +85,7 @@ static void VramCopyLoad(const RECT* rect, const u_long* data) {
         rect->y + rect->h > VRAM_H) {
         return;
     }
+    vram_area_marked = 0;
     const u16* src = (const u16*)data;
     for (int j = 0; j < rect->h; j++) {
         size_t row = (size_t)(rect->y + j) * VRAM_W + rect->x;
@@ -96,6 +98,7 @@ static void VramCopyFill(RECT rect, u_char r, u_char g, u_char b) {
     if (!VramCopyClip(&rect)) {
         return;
     }
+    vram_area_marked = 0;
     u16 c = (u16)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
     for (int j = 0; j < rect.h; j++) {
         size_t row = (size_t)(rect.y + j) * VRAM_W + rect.x;
@@ -111,6 +114,7 @@ static void VramCopyMove(RECT rect, int x, int y) {
     if (!VramCopyClip(&rect) || !VramCopyClip(&dst)) {
         return;
     }
+    vram_area_marked = 0;
     int w = VRAM_COPY_MIN(rect.w, dst.w), h = VRAM_COPY_MIN(rect.h, dst.h);
     for (int j = 0; j < h; j++) {
         int sj = dst.y > rect.y ? h - 1 - j : j; // overlapping rows

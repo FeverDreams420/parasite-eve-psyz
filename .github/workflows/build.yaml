@@ -16,6 +16,8 @@ jobs:
     env:
       CI: 1
       OS: linux
+      SDL_AUDIO_DRIVER: dummy
+      PSYZ_HEADLESS: gpu
     steps:
       - name: Install requirements
         run: |
@@ -48,6 +50,8 @@ jobs:
     env:
       CI: 1
       OS: linux
+      SDL_AUDIO_DRIVER: dummy
+      PSYZ_HEADLESS: gpu
     steps:
       - name: Clone repo
         uses: actions/checkout@v4
@@ -62,6 +66,8 @@ jobs:
     env:
       CI: 1
       OS: windows
+      SDL_AUDIO_DRIVER: dummy
+      PSYZ_HEADLESS: gpu
       SDL_VIDEODRIVER: offscreen
     strategy:
       fail-fast: false
@@ -107,6 +113,8 @@ jobs:
     env:
       CI: 1
       OS: darwin
+      SDL_AUDIO_DRIVER: dummy
+      PSYZ_HEADLESS: gpu
     steps:
       - name: Install requirements
         run: brew install cmake ninja sdl2

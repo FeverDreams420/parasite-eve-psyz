@@ -5,7 +5,7 @@
 #include <kernel.h>
 #include <libetc.h>
 #include <libgpu.h>
-#ifdef __psyz
+#if defined(__psyz) && !defined(__PSP__)
 #include <SDL3/SDL.h>
 #endif
 
@@ -153,9 +153,9 @@ ZTEST(gpu, supersampling_at_max_resolution_preserves_requested_size) {
  * centre, so the margins past the screen's edges are kept; full-width fills
  * cover them too, and drawing elsewhere in VRAM is left alone. */
 ZTEST(gpu, widescreen_squeezes_display_buffer_drawing) {
-#if defined(__psyz) && !defined(__PSP__)
+#ifdef PSYZ_TEST_SDL_GPU
     const char *headless=getenv("PSYZ_HEADLESS");
-    if(headless&&!strcmp(headless,"1"))return;
+    if(headless&&!strcmp(headless,"1"))zskip("requires the SDL GPU renderer");
     DISPENV disp;SetDefDispEnv(&disp,0,0,320,224);disp.screen.h=224;PutDispEnv(&disp);
     DRAWENV draw;SetDefDrawEnv(&draw,0,0,320,224);draw.dtd=0;PutDrawEnv(&draw);
     RECT clear={0,0,320,224},line={0,100,320,1};
@@ -248,6 +248,8 @@ ZTEST(gpu, widescreen_squeezes_display_buffer_drawing) {
     PutDrawEnv(&draw);ClearImage(&clear,0,0,0);DrawPrim(&margin);
     DrawSync(0);StoreImage(&line,(u_long*)row);DrawSync(0);
     zassert_s32_eq(0,row[1]&0x7FFF);
+#else
+    zskip("requires the SDL GPU renderer");
 #endif
 }
 
@@ -301,6 +303,15 @@ ZTEST(gpu, vram_copy_follows_uploads_fills_and_copies) {
     DrawSync(0);
     zexpect_u8_eq(0, known[302 * 1024 + 703]);
     zexpect_u8_eq(1, known[300 * 1024 + 600]);
+
+    /* A later upload in the same drawing area is known until the next
+     * primitive. No new drawing-area command is required. */
+    LoadImage(&fill, (u_long *)((u16[32]){0x1234}));
+    DrawSync(0);
+    zexpect_u8_eq(1, known[300 * 1024 + 700]);
+    DrawPrim(&tile);
+    DrawSync(0);
+    zexpect_u8_eq(0, known[300 * 1024 + 700]);
 
     zassert_s32_eq(0, Psyz_GpuSetVramCopy(0));
     zexpect_ptr_eq(NULL, Psyz_GpuGetVramCopy(NULL));
@@ -1302,7 +1313,7 @@ ZTEST(gpu, move_image_internal_res) {
     zassert_s32_eq(1, Psyz_VideoGetInternalResolution());
     VSync(0);
     ASSERT_FRAME("move_image", 0, 1.0f);
-#ifdef __psyz
+#if defined(__psyz) && !defined(__PSP__)
     const char* headless = getenv("PSYZ_HEADLESS");
     if (headless && strcmp(headless, "gpu") == 0) {
         int count = 0;

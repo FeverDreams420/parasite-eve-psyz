@@ -18,7 +18,14 @@ static inline uint64_t AtomicTimeLoad(AtomicTime* p) {
     return (uint64_t)_InterlockedCompareExchange64(p, 0, 0);
 }
 static inline void AtomicTimeStore(AtomicTime* p, uint64_t v) {
-    _InterlockedExchange64(p, (__int64)v);
+    /* Exchange64 is not available on 32-bit MSVC; cmpxchg8b is. */
+    uint64_t previous = AtomicTimeLoad(p);
+    for (;;) {
+        uint64_t observed = (uint64_t)_InterlockedCompareExchange64(
+            p, (__int64)v, (__int64)previous);
+        if (observed == previous) break;
+        previous = observed;
+    }
 }
 static inline long AtomicLoad(AtomicWord* p) { return _InterlockedOr(p, 0); }
 static inline void AtomicStore(AtomicWord* p, long v) {
@@ -31,13 +38,31 @@ static inline void AtomicAdd(AtomicWord* p, long v) {
     _InterlockedExchangeAdd(p, v);
 }
 #else
+#ifdef __PSP__
+#include <pspkernel.h>
+#endif
 typedef long AtomicWord;
 typedef uint64_t AtomicTime;
 static inline uint64_t AtomicTimeLoad(AtomicTime* p) {
+#ifdef __PSP__
+    /* Single-core Allegrex cannot emit 64-bit atomics. Keep the short
+     * two-word access indivisible against interrupt/thread switches. */
+    unsigned state = sceKernelCpuSuspendIntr();
+    uint64_t value = *(volatile uint64_t*)p;
+    sceKernelCpuResumeIntr(state);
+    return value;
+#else
     return __atomic_load_n(p, __ATOMIC_SEQ_CST);
+#endif
 }
 static inline void AtomicTimeStore(AtomicTime* p, uint64_t v) {
+#ifdef __PSP__
+    unsigned state = sceKernelCpuSuspendIntr();
+    *(volatile uint64_t*)p = v;
+    sceKernelCpuResumeIntr(state);
+#else
     __atomic_store_n(p, v, __ATOMIC_SEQ_CST);
+#endif
 }
 static inline long AtomicLoad(AtomicWord* p) {
     return __atomic_load_n(p, __ATOMIC_SEQ_CST);

@@ -774,8 +774,14 @@ ZTEST(libcd_playback, cdda_playback) {
     // Set arbitrary CD volume that will get reset with CdReset(1) anyway
     CdMix(&fake_vol);
 
-    // Initialize CD and audio systems
+    // Start from a known mixer state before CD reset writes its gains.
+    // Otherwise the device thread can latch them before our first pull.
+    zassert_s32_eq(0, Psyz_AudioInit());
+    Psyz_AudioPause();
+    Psyz_AudioLock();
+    Psyz_SpuReset(0);
     CdReset(1);
+    Psyz_AudioUnlock();
 
     // Set CD-DA mode (required for CDDA playback)
     param[0] = CdlModeDA;
